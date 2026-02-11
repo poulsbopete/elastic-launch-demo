@@ -16,6 +16,9 @@ STANDBY = "STANDBY"
 ACTIVE = "ACTIVE"
 RESOLVING = "RESOLVING"
 
+# Maximum fault duration (seconds)
+MAX_FAULT_DURATION = 3600  # 1 hour
+
 
 class ChaosController:
     """Thread-safe chaos channel state management."""
@@ -95,13 +98,38 @@ class ChaosController:
             "name": ch_def["name"],
         }
 
+    def _expire_stale(self) -> None:
+        """Auto-resolve channels that have been active longer than MAX_FAULT_DURATION.
+
+        Must be called while holding self._lock.
+        """
+        now = time.time()
+        for ch_id, ch in self._channels.items():
+            if ch["state"] != ACTIVE:
+                continue
+            if ch["triggered_at"] and (now - ch["triggered_at"]) >= MAX_FAULT_DURATION:
+                ch["state"] = STANDBY
+                ch["mode"] = None
+                ch["resolved_at"] = now
+                ch["callback_url"] = ""
+                ch["user_email"] = ""
+                ch_def = CHANNEL_REGISTRY[ch_id]
+                logger.info(
+                    "CHAOS: Channel %d [%s] AUTO-EXPIRED after %ds",
+                    ch_id,
+                    ch_def["name"],
+                    MAX_FAULT_DURATION,
+                )
+
     def is_active(self, channel: int) -> bool:
         with self._lock:
+            self._expire_stale()
             ch = self._channels.get(channel)
             return ch is not None and ch["state"] == ACTIVE
 
     def get_status(self) -> dict[str, Any]:
         with self._lock:
+            self._expire_stale()
             result = {}
             for ch_id, ch_state in self._channels.items():
                 ch_def = CHANNEL_REGISTRY[ch_id]

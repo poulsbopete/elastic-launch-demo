@@ -122,6 +122,11 @@ body {
     border-color: var(--nominal);
 }
 
+.channel-dropdown option:disabled {
+    color: #555;
+    font-style: italic;
+}
+
 /* ── Channel Info ───────────────────────────────────── */
 .channel-info {
     margin-bottom: 20px;
@@ -349,6 +354,13 @@ body {
     color: var(--text-secondary);
     letter-spacing: 2px;
     text-transform: uppercase;
+}
+
+.active-channel-card .ac-expiry {
+    font-size: 10px;
+    color: var(--warning);
+    margin-top: 4px;
+    letter-spacing: 0.5px;
 }
 
 .active-channel-card .ac-resolve-btn {

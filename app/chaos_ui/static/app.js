@@ -72,17 +72,25 @@
 
     function populateDropdown(data) {
         const select = document.getElementById('channel-select');
-        // Clear existing options except first
-        while (select.options.length > 1) select.remove(1);
-
         const sortedIds = Object.keys(data).map(Number).sort((a, b) => a - b);
-        for (const id of sortedIds) {
-            const ch = data[id];
-            const opt = document.createElement('option');
-            opt.value = id;
-            const stateTag = ch.state === 'ACTIVE' ? ' [ACTIVE]' : '';
-            opt.textContent = `CH-${String(id).padStart(2, '0')}: ${ch.name}${stateTag}`;
-            select.appendChild(opt);
+
+        // Build options once on first call
+        if (select.options.length <= 1) {
+            for (const id of sortedIds) {
+                const opt = document.createElement('option');
+                opt.value = id;
+                select.appendChild(opt);
+            }
+        }
+
+        // Update text and disabled state in-place (no rebuild)
+        for (let i = 1; i < select.options.length; i++) {
+            const opt = select.options[i];
+            const ch = data[opt.value];
+            if (!ch) continue;
+            const label = `CH-${String(opt.value).padStart(2, '0')}: ${ch.name}`;
+            opt.textContent = ch.state === 'ACTIVE' ? label + ' [IN USE]' : label;
+            opt.disabled = ch.state === 'ACTIVE';
         }
     }
 
@@ -189,28 +197,32 @@
 
         if (activeIds.length === 0) {
             container.innerHTML = '<div class="no-active">No active faults</div>';
-            return;
+        } else {
+            const MAX_DURATION = 3600; // 1 hour, matches backend
+            container.innerHTML = activeIds.map(id => {
+                const ch = data[id];
+                const elapsed = ch.triggered_at ? Math.round((Date.now() / 1000) - ch.triggered_at) : 0;
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                const remaining = Math.max(0, MAX_DURATION - elapsed);
+                const remMins = Math.floor(remaining / 60);
+                const remSecs = remaining % 60;
+                return `
+                    <div class="active-channel-card">
+                        <div class="ac-header">
+                            <span class="ac-channel">CH-${String(id).padStart(2, '0')}</span>
+                            <span class="ac-time">${mins}m ${secs}s ago</span>
+                        </div>
+                        <div class="ac-name">${ch.name}</div>
+                        <div class="ac-subsystem">${ch.subsystem} | ${(ch.affected_services || []).join(', ')}</div>
+                        <div class="ac-expiry">Auto-expires in ${remMins}m ${remSecs}s</div>
+                        <button class="ac-resolve-btn" onclick="resolveChannel(${id})">RESOLVE</button>
+                    </div>
+                `;
+            }).join('');
         }
 
-        container.innerHTML = activeIds.map(id => {
-            const ch = data[id];
-            const elapsed = ch.triggered_at ? Math.round((Date.now() / 1000) - ch.triggered_at) : 0;
-            const mins = Math.floor(elapsed / 60);
-            const secs = elapsed % 60;
-            return `
-                <div class="active-channel-card">
-                    <div class="ac-header">
-                        <span class="ac-channel">CH-${String(id).padStart(2, '0')}</span>
-                        <span class="ac-time">${mins}m ${secs}s ago</span>
-                    </div>
-                    <div class="ac-name">${ch.name}</div>
-                    <div class="ac-subsystem">${ch.subsystem} | ${(ch.affected_services || []).join(', ')}</div>
-                    <button class="ac-resolve-btn" onclick="resolveChannel(${id})">RESOLVE</button>
-                </div>
-            `;
-        }).join('');
-
-        // Update dropdown to show active state
+        // Always refresh dropdown to reflect current state
         populateDropdown(data);
     }
 
