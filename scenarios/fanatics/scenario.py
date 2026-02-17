@@ -78,6 +78,7 @@ class FanaticsScenario(BaseScenario):
                 "cloud_availability_zone": "us-central1-b",
                 "subsystem": "network_access",
                 "language": "cpp",
+                "generates_traces": False,
             },
             "cloud-inventory-scanner": {
                 "cloud_provider": "gcp",
@@ -94,6 +95,7 @@ class FanaticsScenario(BaseScenario):
                 "cloud_availability_zone": "eastus-1",
                 "subsystem": "network_core",
                 "language": "go",
+                "generates_traces": False,
             },
             "firewall-gateway": {
                 "cloud_provider": "azure",
@@ -102,6 +104,7 @@ class FanaticsScenario(BaseScenario):
                 "cloud_availability_zone": "eastus-2",
                 "subsystem": "security",
                 "language": "rust",
+                "generates_traces": False,
             },
             "dns-dhcp-service": {
                 "cloud_provider": "azure",
@@ -110,6 +113,7 @@ class FanaticsScenario(BaseScenario):
                 "cloud_availability_zone": "eastus-1",
                 "subsystem": "network_services",
                 "language": "java",
+                "generates_traces": False,
             },
         }
 

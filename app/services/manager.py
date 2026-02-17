@@ -126,14 +126,18 @@ class ServiceManager:
         k8s_args = (self.otlp, self._stop_event)
         k8s_kwargs = {"scenario_data": scenario_data} if scenario_data else {}
 
+        # Common args/kwargs for generators that accept scenario_data
+        common_args = (self.otlp, self._stop_event)
+        common_kwargs = {"scenario_data": scenario_data} if scenario_data else {}
+
         generators = [
             ("gen-traces", run_traces, trace_args, trace_kwargs),
             ("gen-host-metrics", run_metrics, host_args, host_kwargs),
-            ("gen-nginx", run_nginx, (self.otlp, self._stop_event), {}),
-            ("gen-mysql", run_mysql, (self.otlp, self._stop_event), {}),
+            ("gen-nginx", run_nginx, common_args, common_kwargs),
+            ("gen-mysql", run_mysql, common_args, common_kwargs),
             ("gen-k8s-metrics", run_k8s, k8s_args, k8s_kwargs),
-            ("gen-nginx-metrics", run_nginx_metrics, (self.otlp, self._stop_event), {}),
-            ("gen-vpc-flow", run_vpc, (self.otlp, self._stop_event), {}),
+            ("gen-nginx-metrics", run_nginx_metrics, common_args, common_kwargs),
+            ("gen-vpc-flow", run_vpc, common_args, common_kwargs),
         ]
         for name, fn, args, kwargs in generators:
             t = threading.Thread(

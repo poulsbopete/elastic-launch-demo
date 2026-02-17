@@ -130,16 +130,18 @@ def _build_gcp_resource() -> dict:
     return {"attributes": _format_attributes(attrs), "schemaUrl": SCHEMA_URL}
 
 
-def _generate_gcp_flow_record(rng: random.Random) -> dict:
+def _generate_gcp_flow_record(rng: random.Random, gcp_vpc_names: list | None = None) -> dict:
     """Generate a single GCP VPC flow log record."""
+    _vpc_names = gcp_vpc_names or GCP_VPC_NAMES
+
     now_ns = _now_ns()
     src_ip = rng.choice(GCP_INTERNAL_IPS + GCP_EXTERNAL_IPS)
     dst_ip = rng.choice(GCP_INTERNAL_IPS + GCP_EXTERNAL_IPS)
     bytes_sent = rng.randint(64, 2_000_000)
     packets_sent = max(1, bytes_sent // rng.randint(500, 1500))
     reporter = rng.choice(["SRC", "DEST"])
-    src_vpc = rng.choice(GCP_VPC_NAMES)
-    dst_vpc = rng.choice(GCP_VPC_NAMES)
+    src_vpc = rng.choice(_vpc_names)
+    dst_vpc = rng.choice(_vpc_names)
     transport = rng.choice(["tcp"] * 6 + ["udp"] * 3 + ["icmp"])
 
     attrs = {
@@ -170,14 +172,38 @@ def _generate_gcp_flow_record(rng: random.Random) -> dict:
 
 # ── Run loop ─────────────────────────────────────────────────────────────────
 
-def run(client: OTLPClient, stop_event: threading.Event) -> None:
+def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None) -> None:
     """Run VPC flow log generator loop until stop_event is set."""
     rng = random.Random()
-    aws_resource = _build_aws_resource()
-    gcp_resource = _build_gcp_resource()
 
-    logger.info("VPC flow generator started (interval=%ds, batch=%d-%d per provider)",
-                FLOW_INTERVAL, BATCH_SIZE_MIN, BATCH_SIZE_MAX)
+    # Rebuild namespace-dependent data from scenario_data to avoid import-time freezing
+    if scenario_data:
+        ns = scenario_data["namespace"]
+        scope_name = f"{ns}-vpc-flow-generator"
+        gcp_vpc_names = [f"{ns}-vpc-prod", f"{ns}-vpc-staging", f"{ns}-vpc-data"]
+        # Rebuild GCP resource with dynamic namespace
+        gcp_attrs = {
+            "cloud.provider": "gcp",
+            "cloud.platform": "gcp_compute_engine",
+            "cloud.region": "us-central1",
+            "cloud.account.id": f"{ns}-project-prod",
+            "data_stream.type": "logs",
+            "data_stream.dataset": "gcp.vpcflow",
+            "data_stream.namespace": "default",
+            "service.name": "gcp-vpc-flow",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.24.0",
+        }
+        gcp_resource = {"attributes": _format_attributes(gcp_attrs), "schemaUrl": SCHEMA_URL}
+    else:
+        scope_name = SCOPE_NAME
+        gcp_vpc_names = GCP_VPC_NAMES
+        gcp_resource = _build_gcp_resource()
+
+    aws_resource = _build_aws_resource()
+
+    logger.info("VPC flow generator started (interval=%ds, batch=%d-%d per provider, scope=%s)",
+                FLOW_INTERVAL, BATCH_SIZE_MIN, BATCH_SIZE_MAX, scope_name)
 
     batch_count = 0
     while not stop_event.is_set():
@@ -188,7 +214,7 @@ def run(client: OTLPClient, stop_event: threading.Event) -> None:
             "resourceLogs": [{
                 "resource": aws_resource,
                 "scopeLogs": [{
-                    "scope": {"name": SCOPE_NAME, "version": SCOPE_VERSION},
+                    "scope": {"name": scope_name, "version": SCOPE_VERSION},
                     "logRecords": aws_records,
                 }],
             }]
@@ -197,12 +223,12 @@ def run(client: OTLPClient, stop_event: threading.Event) -> None:
 
         # GCP flow logs
         gcp_batch_size = rng.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
-        gcp_records = [_generate_gcp_flow_record(rng) for _ in range(gcp_batch_size)]
+        gcp_records = [_generate_gcp_flow_record(rng, gcp_vpc_names) for _ in range(gcp_batch_size)]
         gcp_payload = {
             "resourceLogs": [{
                 "resource": gcp_resource,
                 "scopeLogs": [{
-                    "scope": {"name": SCOPE_NAME, "version": SCOPE_VERSION},
+                    "scope": {"name": scope_name, "version": SCOPE_VERSION},
                     "logRecords": gcp_records,
                 }],
             }]

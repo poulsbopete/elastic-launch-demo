@@ -334,12 +334,24 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
     rng = random.Random()
 
     # Use scenario_data overrides or fall back to module-level globals
-    _services = scenario_data["services"] if scenario_data else SERVICES
+    _all_services = scenario_data["services"] if scenario_data else SERVICES
     _namespace = scenario_data["namespace"] if scenario_data else NAMESPACE
     _channel_registry = scenario_data["channel_registry"] if scenario_data else CHANNEL_REGISTRY
-    _topology = scenario_data["service_topology"] if scenario_data else SERVICE_TOPOLOGY
-    _endpoints = scenario_data["entry_endpoints"] if scenario_data else ENTRY_ENDPOINTS
+    _all_topology = scenario_data["service_topology"] if scenario_data else SERVICE_TOPOLOGY
+    _all_endpoints = scenario_data["entry_endpoints"] if scenario_data else ENTRY_ENDPOINTS
     _db_ops = scenario_data["db_operations"] if scenario_data else DB_OPERATIONS
+
+    # Filter out services that don't generate traces (e.g. infrastructure/network devices)
+    excluded = {name for name, cfg in _all_services.items() if cfg.get("generates_traces") is False}
+    _services = {name: cfg for name, cfg in _all_services.items() if name not in excluded}
+    _topology = {
+        caller: [(callee, ep, method) for callee, ep, method in calls if callee not in excluded]
+        for caller, calls in _all_topology.items() if caller not in excluded
+    }
+    _endpoints = {name: eps for name, eps in _all_endpoints.items() if name not in excluded}
+
+    if excluded:
+        logger.info("Excluding %d infra services from traces: %s", len(excluded), ", ".join(sorted(excluded)))
 
     resources = {svc: _build_resource(svc, services=_services, namespace=_namespace) for svc in _services}
     total_traces = 0

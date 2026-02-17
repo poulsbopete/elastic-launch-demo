@@ -178,10 +178,21 @@ def _build_trace_resource() -> dict:
 
 
 # ── Log record generators ────────────────────────────────────────────────────
-def _generate_slow_query_log(client: OTLPClient, rng: random.Random) -> tuple[dict, dict]:
+def _generate_slow_query_log(client: OTLPClient, rng: random.Random,
+                             databases: list | None = None,
+                             tables: dict | None = None,
+                             client_hosts: list | None = None,
+                             db_prefix: str | None = None,
+                             namespace: str | None = None) -> tuple[dict, dict]:
+    _databases = databases or DATABASES
+    _tables = tables or TABLES
+    _client_hosts = client_hosts or CLIENT_HOSTS
+    _db_prefix = db_prefix or _DB_PREFIX
+    _ns = namespace or NAMESPACE
+
     operation, query_template = rng.choice(SLOW_QUERIES)
-    db = rng.choice(DATABASES)
-    table = rng.choice(TABLES[db])
+    db = rng.choice(_databases)
+    table = rng.choice(_tables[db])
     subsystem = rng.choice(SUBSYSTEMS)
     phase = rng.choice(PHASES)
 
@@ -214,11 +225,11 @@ def _generate_slow_query_log(client: OTLPClient, rng: random.Random) -> tuple[di
     rows_sent = rng.randint(0, 10000)
     rows_examined = rng.randint(rows_sent, rows_sent * 100 + 1)
     duration_ns = int(query_time_s * 1_000_000_000)
-    host = rng.choice(CLIENT_HOSTS)
+    host = rng.choice(_client_hosts)
 
     body = (
         f"# Time: {time.strftime('%Y-%m-%dT%H:%M:%S.000000Z', time.gmtime())}\n"
-        f"# User@Host: {_DB_PREFIX}_app[{_DB_PREFIX}_app] @ {host}\n"
+        f"# User@Host: {_db_prefix}_app[{_db_prefix}_app] @ {host}\n"
         f"# Query_time: {query_time_s}  Lock_time: {lock_time_s}  "
         f"Rows_sent: {rows_sent}  Rows_examined: {rows_examined}\n"
         f"use {db};\n"
@@ -242,7 +253,7 @@ def _generate_slow_query_log(client: OTLPClient, rng: random.Random) -> tuple[di
         "mysql.slowlog.rows_examined": rows_examined,
         "client.address": host.split(":")[0],
         "client.port": int(host.split(":")[1]),
-        "db.user": f"{_DB_PREFIX}_app",
+        "db.user": f"{_db_prefix}_app",
     }
 
     log_record = client.build_log_record(
@@ -265,20 +276,27 @@ def _generate_slow_query_log(client: OTLPClient, rng: random.Random) -> tuple[di
             "db.statement": query,
             "db.operation": operation,
             "db.sql.table": table,
-            "net.peer.name": f"{NAMESPACE}-mysql-host",
+            "net.peer.name": f"{_ns}-mysql-host",
             "net.peer.port": 3306,
-            "db.user": f"{_DB_PREFIX}_app",
+            "db.user": f"{_db_prefix}_app",
         },
     )
 
     return log_record, span
 
 
-def _generate_error_log(client: OTLPClient, rng: random.Random) -> dict:
+def _generate_error_log(client: OTLPClient, rng: random.Random,
+                        databases: list | None = None,
+                        tables: dict | None = None,
+                        client_hosts: list | None = None) -> dict:
+    _databases = databases or DATABASES
+    _tables = tables or TABLES
+    _client_hosts = client_hosts or CLIENT_HOSTS
+
     severity_text, msg_template = rng.choice(ERROR_MESSAGES)
-    db = rng.choice(DATABASES)
-    table = rng.choice(TABLES[db])
-    host = rng.choice(CLIENT_HOSTS)
+    db = rng.choice(_databases)
+    table = rng.choice(_tables[db])
+    host = rng.choice(_client_hosts)
 
     msg = msg_template.format(
         conn_id=rng.randint(1000, 99999),
@@ -310,18 +328,80 @@ def _generate_error_log(client: OTLPClient, rng: random.Random) -> dict:
 
 
 # ── Run loop (used by ServiceManager and standalone) ──────────────────────────
-def run(client: OTLPClient, stop_event: threading.Event) -> None:
+def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None) -> None:
     """Run MySQL log generator loop until stop_event is set."""
     rng = random.Random()
-    slowlog_resource = _build_slowlog_resource()
-    error_resource = _build_error_resource()
-    trace_resource = _build_trace_resource()
+
+    # Rebuild namespace-dependent data from scenario_data to avoid import-time freezing
+    if scenario_data:
+        ns = scenario_data["namespace"]
+        db_prefix = ns.replace("-", "_")
+    else:
+        ns = NAMESPACE
+        db_prefix = _DB_PREFIX
+
+    databases = [f"{db_prefix}_telemetry", f"{db_prefix}_mission", f"{db_prefix}_sensors", f"{db_prefix}_audit"]
+    tables = {
+        f"{db_prefix}_telemetry": [
+            "telemetry_readings", "sensor_data", "metric_snapshots",
+            "log_entries", "trace_spans",
+        ],
+        f"{db_prefix}_mission": [
+            "mission_events", "countdown_phases", "launch_parameters",
+            "abort_criteria", "hold_records",
+        ],
+        f"{db_prefix}_sensors": [
+            "sensor_calibrations", "sensor_registry", "calibration_epochs",
+            "sensor_thresholds", "validation_results",
+        ],
+        f"{db_prefix}_audit": [
+            "remediation_log", "escalation_log", "agent_actions",
+            "operator_decisions", "safety_assessments",
+        ],
+    }
+    client_hosts = [
+        f"{ns}-app-01.internal:52341",
+        f"{ns}-app-02.internal:48892",
+        f"{ns}-worker-01.internal:55123",
+        f"{ns}-worker-02.internal:49001",
+        f"{ns}-cron.internal:60012",
+        f"{ns}-agent.internal:51887",
+    ]
+
+    def _build_resource_dynamic(dataset: str, data_stream_type: str = "logs") -> dict:
+        return {
+            "attributes": _format_attributes({
+                "service.name": "mysql-primary",
+                "service.namespace": ns,
+                "service.version": "8.0.36",
+                "service.instance.id": "mysql-primary-001",
+                "telemetry.sdk.language": "python",
+                "telemetry.sdk.name": "opentelemetry",
+                "telemetry.sdk.version": "1.24.0",
+                "cloud.provider": "gcp",
+                "cloud.platform": "gcp_compute_engine",
+                "cloud.region": "us-central1",
+                "cloud.availability_zone": "us-central1-b",
+                "deployment.environment": f"production-{ns}",
+                "host.name": f"{ns}-mysql-host",
+                "host.architecture": "amd64",
+                "os.type": "linux",
+                "data_stream.type": data_stream_type,
+                "data_stream.dataset": dataset,
+                "data_stream.namespace": "default",
+            }),
+            "schemaUrl": SCHEMA_URL,
+        }
+
+    slowlog_resource = _build_resource_dynamic("mysql.slowlog")
+    error_resource = _build_resource_dynamic("mysql.error")
+    trace_resource = _build_resource_dynamic("generic", "traces")
 
     total_sent = 0
     total_spans = 0
     deadlock_storm = False
 
-    logger.info("MySQL log generator started")
+    logger.info("MySQL log generator started (namespace=%s, db_prefix=%s)", ns, db_prefix)
 
     while not stop_event.is_set():
         batch_size = rng.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
@@ -336,7 +416,7 @@ def run(client: OTLPClient, stop_event: threading.Event) -> None:
         slow_records = []
         spans = []
         for _ in range(batch_size):
-            log_record, span = _generate_slow_query_log(client, rng)
+            log_record, span = _generate_slow_query_log(client, rng, databases, tables, client_hosts, db_prefix, ns)
             slow_records.append(log_record)
             spans.append(span)
         client.send_logs(slowlog_resource, slow_records)
@@ -351,7 +431,7 @@ def run(client: OTLPClient, stop_event: threading.Event) -> None:
         if error_count > 0:
             error_records = []
             for _ in range(error_count):
-                error_records.append(_generate_error_log(client, rng))
+                error_records.append(_generate_error_log(client, rng, databases, tables, client_hosts))
             client.send_logs(error_resource, error_records)
 
         total_sent += batch_size + error_count

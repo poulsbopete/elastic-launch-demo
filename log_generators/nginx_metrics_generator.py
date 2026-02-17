@@ -137,15 +137,39 @@ def _generate_metrics(state: NginxState, rng: random.Random) -> list:
     return metrics
 
 
-def run(client: OTLPClient, stop_event: threading.Event) -> None:
+def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None) -> None:
     """Run nginx metrics generator loop until stop_event is set."""
     rng = random.Random()
 
-    resources = [_build_resource(h) for h in NGINX_HOSTS]
-    states = [NginxState(rng) for _ in NGINX_HOSTS]
+    # Rebuild host list dynamically from scenario_data to avoid import-time freezing
+    if scenario_data:
+        ns = scenario_data["namespace"]
+        nginx_hosts = [
+            {
+                "host.name": f"{ns}-nginx-01",
+                "service.name": "nginx-proxy",
+                "service.instance.id": "nginx-proxy-001",
+                "cloud.provider": "aws",
+                "cloud.platform": "aws_ec2",
+                "cloud.region": "us-east-1",
+            },
+            {
+                "host.name": f"{ns}-nginx-02",
+                "service.name": "nginx-proxy",
+                "service.instance.id": "nginx-proxy-002",
+                "cloud.provider": "gcp",
+                "cloud.platform": "gcp_compute_engine",
+                "cloud.region": "us-central1",
+            },
+        ]
+    else:
+        nginx_hosts = NGINX_HOSTS
+
+    resources = [_build_resource(h) for h in nginx_hosts]
+    states = [NginxState(rng) for _ in nginx_hosts]
 
     logger.info("Nginx metrics generator started (interval=%ds, hosts=%d)",
-                METRICS_INTERVAL, len(NGINX_HOSTS))
+                METRICS_INTERVAL, len(nginx_hosts))
 
     scrape_count = 0
     while not stop_event.is_set():

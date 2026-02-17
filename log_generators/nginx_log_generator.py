@@ -187,18 +187,25 @@ def _build_trace_resource() -> dict:
 
 
 # ── Log record generators ────────────────────────────────────────────────────
-def _generate_access_log(client: OTLPClient, rng: random.Random) -> tuple[dict, dict | None]:
+def _generate_access_log(client: OTLPClient, rng: random.Random,
+                         endpoints: list | None = None,
+                         server_names: list | None = None,
+                         namespace: str | None = None) -> tuple[dict, dict | None]:
     """Generate an access log record and optionally an HTTP trace span.
 
     Returns (log_record, span_or_None).
     """
+    _endpoints = endpoints or ENDPOINTS
+    _server_names = server_names or SERVER_NAMES
+    _ns = namespace or NAMESPACE
+
     method = rng.choice(METHODS)
-    path = rng.choice(ENDPOINTS)
+    path = rng.choice(_endpoints)
     status = rng.choice(STATUS_CODES)
     body_bytes = rng.randint(0, 50000) if status == 200 else rng.randint(0, 500)
     client_ip = rng.choice(CLIENT_IPS)
     ua = rng.choice(USER_AGENTS)
-    server = rng.choice(SERVER_NAMES)
+    server = rng.choice(_server_names)
     upstream = rng.choice(UPSTREAM_ADDRS)
     request_time = round(rng.uniform(0.001, 2.0), 3)
 
@@ -229,7 +236,7 @@ def _generate_access_log(client: OTLPClient, rng: random.Random) -> tuple[dict, 
         "client.address": client_ip,
         "user_agent.original": ua,
         "server.address": server,
-        "url.domain": f"{NAMESPACE}.internal",
+        "url.domain": f"{_ns}.internal",
         "network.protocol.name": "http",
         "network.protocol.version": "1.1",
         "upstream.address": upstream,
@@ -266,12 +273,17 @@ def _generate_access_log(client: OTLPClient, rng: random.Random) -> tuple[dict, 
     return log_record, span
 
 
-def _generate_error_log(client: OTLPClient, rng: random.Random) -> dict:
+def _generate_error_log(client: OTLPClient, rng: random.Random,
+                        endpoints: list | None = None,
+                        server_names: list | None = None) -> dict:
+    _endpoints = endpoints or ENDPOINTS
+    _server_names = server_names or SERVER_NAMES
+
     error_msg = rng.choice(ERROR_MESSAGES)
-    server = rng.choice(SERVER_NAMES)
+    server = rng.choice(_server_names)
     upstream = rng.choice(UPSTREAM_ADDRS)
     client_ip = rng.choice(CLIENT_IPS)
-    path = rng.choice(ENDPOINTS)
+    path = rng.choice(_endpoints)
 
     body = f"[error] {error_msg}, client: {client_ip}, server: {server}, request: \"GET {path} HTTP/1.1\", upstream: \"http://{upstream}{path}\""
 
@@ -290,18 +302,75 @@ def _generate_error_log(client: OTLPClient, rng: random.Random) -> dict:
 
 
 # ── Run loop (used by ServiceManager and standalone) ──────────────────────────
-def run(client: OTLPClient, stop_event: threading.Event) -> None:
+def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None) -> None:
     """Run nginx log generator loop until stop_event is set."""
     rng = random.Random()
-    access_resource = _build_access_resource()
-    error_resource = _build_error_resource()
-    trace_resource = _build_trace_resource()
+
+    # Rebuild namespace-dependent data from scenario_data to avoid import-time freezing
+    if scenario_data:
+        ns = scenario_data["namespace"]
+    else:
+        ns = NAMESPACE
+
+    server_names = [f"{ns}-proxy-01", f"{ns}-proxy-02"]
+    endpoints = [
+        "/api/v1/telemetry",
+        "/api/v1/health",
+        "/api/v1/metrics",
+        "/api/v1/traces",
+        "/api/v1/logs",
+        f"/api/v1/agents/{ns}",
+        "/api/v1/channels/status",
+        "/api/v1/mission/countdown",
+        "/api/v1/mission/abort",
+        "/api/v2/telemetry/stream",
+        "/static/app.js",
+        "/static/app.css",
+        "/static/dashboard.js",
+        "/static/favicon.ico",
+        "/dashboard",
+        "/dashboard/mission-control",
+        "/dashboard/subsystems",
+        "/login",
+        "/logout",
+        "/healthz",
+        "/readyz",
+    ]
+
+    def _build_resource_dynamic(dataset: str, data_stream_type: str = "logs") -> dict:
+        return {
+            "attributes": _format_attributes({
+                "service.name": "nginx-proxy",
+                "service.namespace": ns,
+                "service.version": "1.25.4",
+                "service.instance.id": "nginx-proxy-001",
+                "telemetry.sdk.language": "python",
+                "telemetry.sdk.name": "opentelemetry",
+                "telemetry.sdk.version": "1.24.0",
+                "cloud.provider": "gcp",
+                "cloud.platform": "gcp_compute_engine",
+                "cloud.region": "us-central1",
+                "cloud.availability_zone": "us-central1-a",
+                "deployment.environment": f"production-{ns}",
+                "host.name": f"{ns}-proxy-host",
+                "host.architecture": "amd64",
+                "os.type": "linux",
+                "data_stream.type": data_stream_type,
+                "data_stream.dataset": dataset,
+                "data_stream.namespace": "default",
+            }),
+            "schemaUrl": SCHEMA_URL,
+        }
+
+    access_resource = _build_resource_dynamic("nginx.access")
+    error_resource = _build_resource_dynamic("nginx.error")
+    trace_resource = _build_resource_dynamic("generic", "traces")
 
     total_sent = 0
     total_spans = 0
     error_spike_active = False
 
-    logger.info("Nginx log generator started")
+    logger.info("Nginx log generator started (namespace=%s)", ns)
 
     while not stop_event.is_set():
         batch_size = rng.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
@@ -316,7 +385,7 @@ def run(client: OTLPClient, stop_event: threading.Event) -> None:
         access_records = []
         spans = []
         for _ in range(batch_size):
-            log_record, span = _generate_access_log(client, rng)
+            log_record, span = _generate_access_log(client, rng, endpoints, server_names, ns)
             access_records.append(log_record)
             if span:
                 spans.append(span)
@@ -332,7 +401,7 @@ def run(client: OTLPClient, stop_event: threading.Event) -> None:
         if error_count > 0:
             error_records = []
             for _ in range(error_count):
-                error_records.append(_generate_error_log(client, rng))
+                error_records.append(_generate_error_log(client, rng, endpoints, server_names))
             client.send_logs(error_resource, error_records)
 
         total_sent += batch_size + error_count
