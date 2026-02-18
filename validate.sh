@@ -616,7 +616,7 @@ print(e.get('message','') if isinstance(e,dict) else str(e))
             sleep 12
 
             rem_run_response=$(kb_post "/api/workflows/${remediation_wf_id}/run" \
-                '{"inputs":{"error_type":"FuelPressureException","channel":2,"action_type":"recalibrate_sensor","target_service":"fuel-system","justification":"Validation test - automated remediation check","dry_run":false}}')
+                '{"inputs":{"error_type":"FuelPressureException","channel":2,"action_type":"reset_pipeline","target_service":"fuel-system","justification":"Validation test - automated remediation check","dry_run":false}}')
         rem_run_code=$(echo "$rem_run_response" | tail -1)
         rem_run_body=$(echo "$rem_run_response" | sed '$d')
 

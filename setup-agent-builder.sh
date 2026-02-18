@@ -255,7 +255,7 @@ fi
 create_tool "remediation_action" '{
   "id": "remediation_action",
   "type": "workflow",
-  "description": "Execute remediation actions for NOVA-7 anomalies. Triggers the Remediation Action workflow which searches for the specific error, extracts the callback URL, resolves the fault channel, captures before/after error counts, and logs to the audit trail. Inputs: error_type (e.g. FuelPressureException), channel (1-20), action_type (recalibrate_sensor, restart_service, failover_service, isolate_subsystem), target_service, justification, dry_run.",
+  "description": "Execute remediation actions for NOVA-7 anomalies. Triggers the Remediation Action workflow which searches for the specific error, extracts the callback URL, resolves the fault channel, captures before/after error counts, and logs to the audit trail. Inputs: error_type (e.g. FuelPressureException), channel (1-20), action_type (reset_pipeline, restart_service, failover_service, isolate_subsystem), target_service, justification, dry_run.",
   "configuration": {
     "workflow_id": "'"${REMEDIATION_WF_ID}"'"
   }

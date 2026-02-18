@@ -1,7 +1,7 @@
 {
   "tool_id": "remediation_action",
   "name": "Remediation Action",
-  "description": "Execute or recommend a remediation action for a detected NOVA-7 anomaly. This tool can trigger automated remediation workflows (sensor recalibration, service restart, failover) or generate a structured remediation plan for manual execution by the launch operations team. All actions are logged for audit trail compliance.",
+  "description": "Execute or recommend a remediation action for a detected anomaly. This tool can trigger automated remediation workflows (pipeline reset, service restart, failover) or generate a structured remediation plan for manual execution by the operations team. All actions are logged for audit trail compliance.",
   "type": "workflow",
   "parameters": {
     "type": "object",
@@ -15,7 +15,7 @@
         "type": "string",
         "enum": [
           "recommend",
-          "recalibrate_sensor",
+          "reset_pipeline",
           "restart_service",
           "failover_service",
           "isolate_subsystem",
@@ -65,7 +65,7 @@
     "type": "workflow",
     "workflow_map": {
       "recommend": "significant_event_notification",
-      "recalibrate_sensor": "remediation_action",
+      "reset_pipeline": "remediation_action",
       "restart_service": "remediation_action",
       "failover_service": "remediation_action",
       "isolate_subsystem": "remediation_action",
