@@ -220,6 +220,14 @@ class ScenarioDeployer:
             # Delete significant events
             self._cleanup_significant_events(client)
 
+            # Delete dashboard
+            resp = client.post(
+                f"{self.kibana_url}/api/saved_objects/_bulk_delete",
+                headers=_kibana_headers(self.api_key),
+                json=[{"type": "dashboard", "id": f"{self.ns}-exec-dashboard"}],
+            )
+            results["dashboard"] = resp.status_code < 300
+
         return results
 
     def teardown_with_progress(self, callback: ProgressCallback | None = None) -> DeployProgress:
@@ -232,6 +240,7 @@ class ScenarioDeployer:
             DeployStep("Delete AI agent & tools"),      # 4
             DeployStep("Delete knowledge base"),        # 5
             DeployStep("Delete audit indices"),         # 6
+            DeployStep("Delete dashboard"),             # 7
         ])
         _notify = callback or (lambda p: None)
         _notify(progress)
@@ -326,6 +335,23 @@ class ScenarioDeployer:
                             deleted += 1
                     step.status = "ok"
                     step.detail = f"Deleted {deleted} audit indices"
+                except Exception as exc:
+                    step.status = "failed"
+                    step.detail = str(exc)
+                _notify(progress)
+
+                # Step 7: Delete dashboard
+                step = progress.steps[7]
+                step.status = "running"
+                _notify(progress)
+                try:
+                    resp = client.post(
+                        f"{self.kibana_url}/api/saved_objects/_bulk_delete",
+                        headers=_kibana_headers(self.api_key),
+                        json=[{"type": "dashboard", "id": f"{self.ns}-exec-dashboard"}],
+                    )
+                    step.status = "ok"
+                    step.detail = "Dashboard deleted" if resp.status_code < 300 else "Dashboard not found"
                 except Exception as exc:
                     step.status = "failed"
                     step.detail = str(exc)
@@ -1433,6 +1459,19 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
                     f"{self.kibana_url}/api/agent_builder/tools/{tool_id}",
                     headers=_kibana_headers(self.api_key),
                 )
+            except Exception:
+                pass
+
+        # Delete ALL known dashboards
+        for ns in all_namespaces:
+            try:
+                r = client.post(
+                    f"{self.kibana_url}/api/saved_objects/_bulk_delete",
+                    headers=_kibana_headers(self.api_key),
+                    json=[{"type": "dashboard", "id": f"{ns}-exec-dashboard"}],
+                )
+                if r.status_code < 300:
+                    deleted += 1
             except Exception:
                 pass
 
