@@ -58,7 +58,7 @@ The propulsion subsystem thermal sensors in the engine bay continuously measure 
 3. **Monitor trend**: Determine if the drift is increasing, stable, or recovering. Increasing drift at rate > 0.5K/minute warrants escalation.
 
 ### Corrective Actions
-1. **Reset pipeline**: Use the `reset_pipeline` remediation action to trigger a sensor recalibration and pipeline reset against the known reference temperature.
+1. **Reset pipeline**: Use the `reset_pipeline` remediation action to reset the processing pipeline and re-establish calibration baselines against the known reference temperature.
 2. **Update calibration epoch**: After recalibration, verify the new epoch is recorded correctly.
 3. **Validate cross-cloud path**: Confirm sensor-validator is receiving timely data from the fuel-system service.
 

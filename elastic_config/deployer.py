@@ -638,6 +638,7 @@ steps:
       body:
         action: "{{{{ inputs.action_type }}}}"
         channel: "{{{{ inputs.channel }}}}"
+        deployment_id: "{{{{ steps.extract_callback.output.var[0].event_meta.deployment_id }}}}"
       timeout: 120s
 
   - name: wait_for_stabilization
@@ -1039,8 +1040,8 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
 - Verify if errors correlate with infrastructure events
 
 ## Remediation
-- **Primary**: Resolve the fault channel via remediation_action tool
-- **Fallback**: Restart affected services if sensor recalibration fails
+- **Primary**: Resolve the fault channel via remediation_action tool with action_type: reset_pipeline
+- **Fallback**: Use action_type: restart_service to restart affected services
 - **Escalation**: If cascade detected, escalate to operations lead
 """
 
