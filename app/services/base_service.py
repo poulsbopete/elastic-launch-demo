@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from app.config import ACTIVE_SCENARIO, CHANNEL_REGISTRY, MISSION_ID, SERVICES
 from app.telemetry import OTLPClient
+from app.trace_context import _trace_context_store
 
 logger = logging.getLogger("nova7.services")
 
@@ -184,8 +185,10 @@ class BaseService(ABC):
         attrs = self._base_log_attrs()
         if extra_attrs:
             attrs.update(extra_attrs)
+        trace_id, span_id = _trace_context_store.get(self.SERVICE_NAME)
         record = self.otlp.build_log_record(
             severity=level, body=message, attributes=attrs, event_name=event_name,
+            trace_id=trace_id, span_id=span_id,
         )
         self.otlp.send_logs(self.resource, [record])
 

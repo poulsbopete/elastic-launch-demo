@@ -20,6 +20,7 @@ import time
 
 from app.telemetry import OTLPClient, _format_attributes, SCHEMA_URL
 from app.config import SERVICES, CHANNEL_REGISTRY, ACTIVE_SCENARIO, NAMESPACE
+from app.trace_context import _trace_context_store
 
 logger = logging.getLogger("trace-generator")
 
@@ -380,6 +381,9 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
             )
             for svc, spans in trace_spans.items():
                 batch_by_service.setdefault(svc, []).extend(spans)
+                # Publish latest trace context for log-trace correlation
+                if spans:
+                    _trace_context_store.set(svc, spans[0]["traceId"], spans[0]["spanId"])
 
         batch_span_count = 0
         for svc, spans in batch_by_service.items():
