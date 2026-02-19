@@ -126,12 +126,12 @@ def _inject_theme(html: str, deployment_id: Optional[str] = None) -> str:
     if inst:
         scenario = inst.ctx.scenario
         mission_id = inst.ctx.mission_id
-        kibana = inst.ctx.kibana_url or _kibana_url
+        kibana = inst.ctx.kibana_url or _get_default_creds()[1]
     else:
         from scenarios import get_scenario
         scenario = get_scenario(ACTIVE_SCENARIO)
         mission_id = MISSION_ID
-        kibana = _kibana_url
+        kibana = _get_default_creds()[1]
 
     theme = scenario.theme
 
@@ -167,8 +167,16 @@ body {{ font-family: {theme.font_family}; }}"""
 
 
 # ── Environment ──────────────────────────────────────────────────────────────
-_kibana_url = os.getenv("KIBANA_URL", "https://localhost:5601").rstrip("/")
 _demo_url = os.getenv("DEMO_URL", "/").rstrip("/")
+
+
+def _get_default_creds() -> tuple[str, str, str]:
+    """Get (elastic_url, kibana_url, api_key) from first active deployment in store."""
+    recs = store.get_all_active()
+    if recs:
+        r = recs[0]
+        return r["elastic_url"], r["kibana_url"], r["elastic_api_key"]
+    return "", "", ""
 
 
 # ── Scenario Selector (new front page) ───────────────────────────────────────
@@ -491,50 +499,6 @@ async def notify_email(body: dict):
 
 # ── Setup / Deployer API ───────────────────────────────────────────────────
 
-def _update_env(elastic_url: str, kibana_url: str, api_key: str, otlp_endpoint: str, scenario_id: str = ""):
-    """Write/update .env with credentials so they persist across restarts."""
-    env_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    updates = {
-        "ELASTIC_URL": elastic_url,
-        "ELASTIC_ENDPOINT": elastic_url,
-        "KIBANA_URL": kibana_url,
-        "ELASTIC_API_KEY": api_key,
-    }
-    if scenario_id:
-        updates["ACTIVE_SCENARIO"] = scenario_id
-    if otlp_endpoint:
-        updates["OTLP_ENDPOINT"] = otlp_endpoint
-        updates["OTLP_API_KEY"] = api_key
-        updates["OTLP_AUTH_TYPE"] = "ApiKey"
-
-    # Read existing .env, preserving lines we don't update
-    existing_lines = []
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            existing_lines = f.readlines()
-
-    seen_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in updates:
-                new_lines.append(f"{key}={updates[key]}\n")
-                seen_keys.add(key)
-                continue
-        new_lines.append(line if line.endswith("\n") else line + "\n")
-
-    # Append any keys not already in the file
-    for key, value in updates.items():
-        if key not in seen_keys:
-            new_lines.append(f"{key}={value}\n")
-
-    with open(env_path, "w") as f:
-        f.writelines(new_lines)
-    logger.info("Updated .env at %s", env_path)
-
-
 @app.post("/api/setup/test-connection")
 async def test_connection(body: dict):
     """Test connectivity to an Elastic environment."""
@@ -596,15 +560,16 @@ async def launch_setup(body: dict):
     from app.instance import ScenarioInstance
 
     scenario_id = body.get("scenario_id", ACTIVE_SCENARIO)
-    kibana_url = body.get("kibana_url", os.getenv("KIBANA_URL", "")).strip().rstrip("/")
-    api_key = body.get("api_key", os.getenv("ELASTIC_API_KEY", "")).strip()
+    _def_elastic, _def_kibana, _def_key = _get_default_creds()
+    kibana_url = body.get("kibana_url", _def_kibana).strip().rstrip("/")
+    api_key = body.get("api_key", _def_key).strip()
 
     # Derive ES URL from Kibana URL unless explicitly provided
     elastic_url = (body.get("elastic_url") or "").strip().rstrip("/")
     if not elastic_url and ".kb." in kibana_url:
         elastic_url = kibana_url.replace(".kb.", ".es.")
     if not elastic_url:
-        elastic_url = os.getenv("ELASTIC_URL", "")
+        elastic_url = _def_elastic
 
     if not kibana_url or not api_key:
         return JSONResponse(
@@ -638,10 +603,6 @@ async def launch_setup(body: dict):
 
         # Use explicit OTLP override if provided, otherwise use derived
         otlp_endpoint = explicit_otlp or result.otlp_endpoint
-
-        # Write .env so credentials persist across app restarts
-        if not result.error:
-            _update_env(elastic_url, kibana_url, api_key, otlp_endpoint or "", scenario_id)
 
         # Create ScenarioContext + ScenarioInstance
         try:
@@ -709,9 +670,7 @@ async def detect_existing(deployment_id: Optional[str] = None):
         api_key = inst.ctx.elastic_api_key
         scenario = inst.ctx.scenario
     else:
-        elastic_url = os.getenv("ELASTIC_URL", "")
-        kibana_url = os.getenv("KIBANA_URL", "")
-        api_key = os.getenv("ELASTIC_API_KEY", "")
+        elastic_url, kibana_url, api_key = _get_default_creds()
         scenario = _get_scenario_for_deployment(deployment_id)
 
     if not elastic_url or not api_key:
@@ -735,9 +694,7 @@ async def teardown_setup(body: dict = {}):
         api_key = inst.ctx.elastic_api_key
         scenario = inst.ctx.scenario
     else:
-        elastic_url = os.getenv("ELASTIC_URL", "")
-        kibana_url = os.getenv("KIBANA_URL", "")
-        api_key = os.getenv("ELASTIC_API_KEY", "")
+        elastic_url, kibana_url, api_key = _get_default_creds()
         scenario = _get_scenario_for_deployment(deployment_id)
 
     if not elastic_url or not api_key:
@@ -799,9 +756,7 @@ async def stop_and_teardown(body: dict = {}):
         logger.info("All generators stopped via stop-and-teardown")
 
         # Clean up ALL scenario artifacts using first available credentials
-        elastic_url = os.getenv("ELASTIC_URL", "")
-        kibana_url = os.getenv("KIBANA_URL", "")
-        api_key = os.getenv("ELASTIC_API_KEY", "")
+        elastic_url, kibana_url, api_key = _get_default_creds()
 
         if not elastic_url or not api_key:
             return {"ok": True, "generators_stopped": True, "artifacts_deleted": 0,

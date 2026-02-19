@@ -14,9 +14,6 @@ OTLP_ENDPOINT = os.getenv("OTLP_ENDPOINT", "http://otel-collector:4318")
 OTLP_API_KEY = os.getenv("OTLP_API_KEY", "")
 OTLP_AUTH_TYPE = os.getenv("OTLP_AUTH_TYPE", "ApiKey")  # "ApiKey" or "Bearer"
 
-ELASTIC_URL = os.getenv("ELASTIC_URL", "")
-ELASTIC_API_KEY = os.getenv("ELASTIC_API_KEY", "")
-
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")

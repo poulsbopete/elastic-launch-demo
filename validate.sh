@@ -18,6 +18,22 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
     set +a
 fi
 
+# Fall back to SQLite deployment store if env vars are empty
+if [[ -z "${ELASTIC_URL:-}" || -z "${ELASTIC_API_KEY:-}" ]]; then
+    eval "$(python3 -c "
+import sqlite3, os
+db = os.path.join('$SCRIPT_DIR', 'data', 'deployments.db')
+if os.path.exists(db):
+    r = sqlite3.connect(db).execute(\"SELECT elastic_url, elastic_api_key, kibana_url, otlp_endpoint, otlp_api_key FROM deployments WHERE status='active' LIMIT 1\").fetchone()
+    if r:
+        print(f'ELASTIC_URL={r[0]}')
+        print(f'ELASTIC_API_KEY={r[1]}')
+        print(f'KIBANA_URL={r[2]}')
+        if r[3]: print(f'OTLP_ENDPOINT={r[3]}')
+        if r[4]: print(f'OTLP_API_KEY={r[4]}')
+" 2>/dev/null || true)"
+fi
+
 ELASTIC_URL="${ELASTIC_URL%/}"
 KIBANA_URL="${KIBANA_URL%/}"
 
