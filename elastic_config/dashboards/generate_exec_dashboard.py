@@ -984,39 +984,60 @@ def _build_dashboard_ndjson(
         "gridData": {"h": 2, "i": "p_se_label", "w": 48, "x": 0, "y": 112},
     })
 
-    # p26: Significant Event Logs (datatable with trace.id, span.id)
-    # Build KQL matching only the error types configured as significant events
+    # p26: Significant Event Logs (ES|QL datatable with body.text, trace.id, span.id)
+    # Build ES|QL WHERE clause matching only configured significant event error types
     if error_types:
-        body_clauses = " OR ".join(f'body.text: "{et}"' for et in error_types)
-        se_kql = f'severity_text: "ERROR" AND ({body_clauses})'
+        kql_parts = " OR ".join(f"body.text: {et}" for et in error_types)
+        esql_where = f'severity_text == "ERROR" AND KQL("{kql_parts}")'
     else:
-        se_kql = 'severity_text: "ERROR"'
+        esql_where = 'severity_text == "ERROR"'
+
+    esql_query = (
+        f"FROM logs,logs.* "
+        f"| WHERE {esql_where} "
+        f"| KEEP body.text, trace.id, span.id, service.name, @timestamp "
+        f"| SORT @timestamp DESC "
+        f"| LIMIT 50"
+    )
 
     lid = uid()
-    cid_trace = uid()
-    cid_span = uid()
-    cid_svc = uid()
-    cid_count = uid()
-    columns = {
-        cid_trace: col_terms("trace.id", "Trace ID", size=25, order_col_id=cid_count),
-        cid_span: col_terms("span.id", "Span ID", size=5, order_col_id=cid_count),
-        cid_svc: col_terms("service.name", "Service", size=10, order_col_id=cid_count),
-        cid_count: col_count(label="Count"),
+    esql_columns = [
+        {"columnId": uid(), "fieldName": "body.text", "meta": {"type": "string"}},
+        {"columnId": uid(), "fieldName": "trace.id", "meta": {"type": "string"}},
+        {"columnId": uid(), "fieldName": "span.id", "meta": {"type": "string"}},
+        {"columnId": uid(), "fieldName": "service.name", "meta": {"type": "string"}},
+        {"columnId": uid(), "fieldName": "@timestamp", "meta": {"type": "date"}},
+    ]
+
+    esql_state = {
+        "adHocDataViews": {},
+        "datasourceStates": {
+            "formBased": {"layers": {}},
+            "indexpattern": {"layers": {}},
+            "textBased": {
+                "layers": {
+                    lid: {
+                        "index": DATA_VIEW_ID_LOGS,
+                        "query": {"esql": esql_query},
+                        "columns": esql_columns,
+                        "timeField": "@timestamp",
+                    }
+                }
+            },
+        },
+        "filters": [],
+        "internalReferences": [],
+        "query": {"language": "kuery", "query": ""},
+        "visualization": {
+            "layerId": lid,
+            "layerType": "data",
+            "columns": [{"columnId": c["columnId"]} for c in esql_columns],
+        },
     }
-    layer = make_layer(lid, [cid_trace, cid_span, cid_svc, cid_count], columns, DATA_VIEW_ID_LOGS)
-    state = make_state(layer, {
-        "layerId": lid,
-        "layerType": "data",
-        "columns": [
-            {"columnId": cid_trace, "isTransposed": False},
-            {"columnId": cid_span, "isTransposed": False},
-            {"columnId": cid_svc, "isTransposed": False},
-            {"columnId": cid_count, "isTransposed": False},
-        ],
-    }, query=se_kql)
+
     panels.append(make_panel("p26",
         {"h": 14, "i": "p26", "w": 48, "x": 0, "y": 114},
-        "Significant Event Logs", "lnsDatatable", state, [make_ref(DATA_VIEW_ID_LOGS, lid)]))
+        "Significant Event Logs", "lnsDatatable", esql_state, []))
 
     # ── Collect all references from panels ───────────────────────────────────
 
