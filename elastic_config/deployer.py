@@ -1158,11 +1158,22 @@ When the user asks you to fix or remediate this issue, use remediation_action to
         notify(self.progress)
 
         views = [
+            # Custom view for exec dashboard panels (broad match, no hyphen)
             {
                 "data_view": {
                     "id": "logs*",
                     "title": "logs*",
                     "name": f"{self.scenario.scenario_name} Logs",
+                    "timeFieldName": "@timestamp",
+                },
+                "override": True,
+            },
+            # OTel-standard views — required by shipped [OTel] dashboards
+            {
+                "data_view": {
+                    "id": "logs-*",
+                    "title": "logs-*",
+                    "name": "logs-*",
                     "timeFieldName": "@timestamp",
                 },
                 "override": True,
