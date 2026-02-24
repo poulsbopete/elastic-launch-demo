@@ -167,8 +167,6 @@ body {{ font-family: {theme.font_family}; }}"""
 
 
 # ── Environment ──────────────────────────────────────────────────────────────
-_demo_url = os.getenv("DEMO_URL", "/").rstrip("/")
-
 
 def _get_default_creds() -> tuple[str, str, str]:
     """Get (elastic_url, kibana_url, api_key) from first active deployment in store."""
@@ -207,7 +205,7 @@ async def landing_page(deployment_id: Optional[str] = None):
 async def slides_page():
     path = os.path.join(_base, "landing", "static", "slides.html")
     with open(path) as f:
-        html = f.read().replace("DEMO_URL_PLACEHOLDER", _demo_url)
+        html = f.read()
     return HTMLResponse(content=html)
 
 
