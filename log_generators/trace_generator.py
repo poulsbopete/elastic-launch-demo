@@ -168,8 +168,12 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
                 for ch in _svc_channels[svc]:
                     extra.update(scenario.get_rca_clues(ch, svc, rng))
             if active_channels:
+                # Use high probability (90%) for both errors AND affected services
+                # (affected services have elevated latency, so attribute must
+                # correlate with slow traces too, not just failed ones)
+                is_affected = bool(_svc_channels.get(svc))
                 for ch in active_channels:
-                    extra.update(scenario.get_correlation_attribute(ch, is_err, rng))
+                    extra.update(scenario.get_correlation_attribute(ch, is_err or is_affected, rng))
         return extra
 
     root_attrs = {
