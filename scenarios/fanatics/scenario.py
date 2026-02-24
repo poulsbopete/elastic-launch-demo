@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from typing import Any
 
 from scenarios.base import BaseScenario, CountdownConfig, UITheme
@@ -131,6 +132,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["network-controller", "dns-dhcp-service"],
                 "cascade_services": ["firewall-gateway", "wifi-controller"],
                 "description": "MAC address table instability causing port flapping on the switching fabric",
+                "investigation_notes": (
+                    "1. Run `show mac address-table notification mac-move` to identify the flapping MAC and involved ports.\n"
+                    "2. Check for physical layer issues: `show interface status` on both source and destination ports for CRC errors, runts, or input errors.\n"
+                    "3. Verify no switching loops exist: `show spanning-tree vlan <id> detail` — a flapping MAC often indicates an STP misconfiguration or a rogue switch.\n"
+                    "4. Look for duplicate MAC from VM migration or HSRP/VRRP misconfiguration: `show mac address-table address <mac>`.\n"
+                    "5. If caused by a NIC teaming misconfiguration on the host side, disable one NIC and confirm flapping stops.\n"
+                    "6. As a short-term fix, apply `switchport port-security` to limit MAC addresses per port and contain the blast radius."
+                ),
+                "remediation_action": "clear_mac_table",
                 "error_message": (
                     "%SW_MATM-4-MACFLAP_NOTIF: Host {mac_address} in vlan {vlan_id} "
                     "is flapping between port {interface_src} and port {interface_dst}, "
@@ -159,6 +169,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["network-controller", "firewall-gateway"],
                 "cascade_services": ["dns-dhcp-service", "wifi-controller"],
                 "description": "Rapid spanning tree topology changes destabilizing Layer 2 forwarding",
+                "investigation_notes": (
+                    "1. Run `show spanning-tree vlan <id> detail` to identify the port generating Topology Change Notifications (TCNs).\n"
+                    "2. Check `show spanning-tree detail | include ieee|from|occur` across all switches to pinpoint the originating bridge.\n"
+                    "3. Verify BPDU Guard and Root Guard are enabled on access ports: `show spanning-tree inconsistentports`.\n"
+                    "4. A sudden burst of TCNs often indicates a flapping uplink or a new device plugged into a trunk port — correlate with interface up/down events.\n"
+                    "5. Enable `spanning-tree portfast` on all edge/access ports to prevent end-host connections from triggering topology changes.\n"
+                    "6. If the root bridge is shifting, set explicit root priority: `spanning-tree vlan <id> root primary` on the designated core switch."
+                ),
+                "remediation_action": "reset_spanning_tree",
                 "error_message": (
                     "%SPANTREE-2-TOPO_CHANGE: Topology Change received on VLAN {vlan_id} "
                     "instance {stp_instance} from bridge {bridge_id} via port {interface}, "
@@ -186,6 +205,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["network-controller", "firewall-gateway"],
                 "cascade_services": ["dns-dhcp-service", "cloud-inventory-scanner"],
                 "description": "BGP peering session repeatedly transitioning between Established and Idle states",
+                "investigation_notes": (
+                    "1. Run `show bgp neighbors <peer_ip>` to check the last NOTIFICATION code and hold timer status.\n"
+                    "2. Examine `show bgp summary` for Established vs non-Established peers and check PfxRcd (prefix received) for anomalies.\n"
+                    "3. Hold Timer Expired (code 4/0) usually means keepalives are not reaching the peer — check interface utilization and MTU with `show interface <intf>`.\n"
+                    "4. Cease/Admin Reset (6/4) indicates the remote side cleared the session — coordinate with the peer AS administrator.\n"
+                    "5. Check route policy: `show route-map` and `show ip prefix-list` — a misconfigured prefix filter can cause constant UPDATE/WITHDRAW cycling.\n"
+                    "6. Verify TCP session health: `show tcp brief | include <peer_ip>` and check for retransmissions that indicate an underlying transport issue."
+                ),
+                "remediation_action": "reset_bgp_session",
                 "error_message": (
                     "%BGP-3-NOTIFICATION: Neighbor {bgp_peer_ip} (AS {bgp_peer_as}) "
                     "sent NOTIFICATION {bgp_notification}, {bgp_flap_count} transitions "
@@ -215,6 +243,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["firewall-gateway", "network-controller"],
                 "cascade_services": ["digital-marketplace", "auction-engine"],
                 "description": "Firewall session table approaching maximum capacity, new connections being dropped",
+                "investigation_notes": (
+                    "1. Run `show session all filter count yes` to confirm active session count, then `show session info` for utilization percentage.\n"
+                    "2. Identify top talkers: `show session all filter source <zone> count yes` — look for a single IP consuming disproportionate sessions.\n"
+                    "3. Check for a DDoS or scan: `show session all filter application unknown` — unknown apps with high session counts suggest malicious traffic.\n"
+                    "4. Review session timeout settings: `show running-config | match timeout` — aggressive TCP timeout defaults (3600s) may keep stale sessions alive.\n"
+                    "5. Reduce TCP session timeout for non-critical zones: `set deviceconfig setting session timeout-tcp 1800`.\n"
+                    "6. If a specific source is flooding, apply a DoS Protection Profile or temporarily block via `set security-rule deny-source <ip>`."
+                ),
+                "remediation_action": "flush_session_table",
                 "error_message": (
                     "1,2025/01/15 14:32:01,007200001234,SYSTEM,session,0,"
                     "SYSTEM-session-threshold,Session table utilization critical: "
@@ -244,6 +281,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["firewall-gateway", "network-controller"],
                 "cascade_services": ["dns-dhcp-service", "digital-marketplace"],
                 "description": "Firewall data plane CPU exceeding safe operating threshold",
+                "investigation_notes": (
+                    "1. Run `show running resource-monitor` to see per-DP CPU, packet buffer, and session rate in real time.\n"
+                    "2. Identify offending policy: `show rule-hit-count` — rules with high hit counts and complex App-ID or content inspection drive DP CPU.\n"
+                    "3. Check threat prevention load: `show threat statistics` — if IPS/AV signature matching is spiking, a signature update or new attack pattern may be the cause.\n"
+                    "4. Review decryption overhead: `show counter global filter aspect dp delta yes | match ssl` — SSL decryption is the #1 DP CPU consumer.\n"
+                    "5. Consider bypassing decryption for trusted high-bandwidth flows (e.g., Windows Update, CDN traffic) with a no-decrypt rule.\n"
+                    "6. If CPU remains critical, enable hardware offload for IPSec tunnels and reduce logging verbosity on high-traffic rules."
+                ),
+                "remediation_action": "restart_management_plane",
                 "error_message": (
                     "1,2025/01/15 14:32:01,007200001234,SYSTEM,general,0,"
                     "SYSTEM-cpu-critical,Data plane CPU at {fw_dp_cpu_pct}% "
@@ -273,6 +319,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["firewall-gateway", "dns-dhcp-service"],
                 "cascade_services": ["digital-marketplace", "auction-engine"],
                 "description": "SSL decryption forward proxy certificate expiring or expired, breaking TLS inspection",
+                "investigation_notes": (
+                    "1. Run `show system certificate detail` to check expiration dates for all installed certificates.\n"
+                    "2. Identify which decryption profile references the expiring cert: `show config running | match ssl-decrypt`.\n"
+                    "3. Count affected policy rules: `show rule-hit-count vsys vsys1 rule-base decryption` — each rule referencing this profile will fail.\n"
+                    "4. Generate a new CSR from PAN-OS: `request certificate generate ...` or import a renewed cert from the internal CA.\n"
+                    "5. After replacement, commit and verify: `request certificate info` and test with `curl -v https://<internal-url>` from a client behind the firewall.\n"
+                    "6. Set up certificate expiration monitoring: configure SNMP traps or syslog alerts for certs expiring within 30 days to prevent recurrence."
+                ),
+                "remediation_action": "renew_certificate",
                 "error_message": (
                     "1,2025/01/15 14:32:01,007200001234,SYSTEM,general,0,"
                     "SYSTEM-cert-expire,Certificate '{cert_cn}' (serial {cert_serial}) "
@@ -303,6 +358,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["wifi-controller", "network-controller"],
                 "cascade_services": ["packaging-fulfillment", "card-printing-system"],
                 "description": "Multiple wireless access points simultaneously losing connectivity to the controller",
+                "investigation_notes": (
+                    "1. Check the Mist dashboard for AP connectivity status and last-seen timestamps across the affected site.\n"
+                    "2. Verify upstream switch port status: `show interface status | include AP` — a switch reboot or PoE budget exhaustion can take down multiple APs simultaneously.\n"
+                    "3. Check PoE allocation: `show power inline` — if the switch PoE budget is exceeded, lower-priority APs will be shut down.\n"
+                    "4. Verify CAPWAP/DTLS tunnel health between APs and the Mist cloud controller — firewall rules may be blocking UDP 2049.\n"
+                    "5. If APs are on a shared VLAN, check for a broadcast storm or STP issue on that VLAN that could saturate AP management traffic.\n"
+                    "6. As immediate remediation, power-cycle the affected switch stack or re-provision APs from the Mist cloud console."
+                ),
+                "remediation_action": "restart_access_point",
                 "error_message": (
                     "AP_DISCONNECTED event_id=mist-evt-{ap_disconnect_count}: "
                     "{ap_disconnect_count} APs lost connectivity in {ap_disconnect_window}s, "
@@ -327,6 +391,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["wifi-controller", "network-controller"],
                 "cascade_services": ["packaging-fulfillment"],
                 "description": "Co-channel and adjacent-channel interference degrading wireless performance",
+                "investigation_notes": (
+                    "1. Check the Mist RRM (Radio Resource Management) dashboard for channel utilization heatmaps and neighbor AP counts.\n"
+                    "2. High co-channel interference with many neighbor APs indicates over-deployment — reduce AP transmit power or disable radios on overlapping APs.\n"
+                    "3. Verify channel assignments: in dense warehouse environments, use only non-overlapping 5GHz channels (36, 40, 44, 48 for UNII-1; 149, 153, 157, 161 for UNII-3).\n"
+                    "4. Check for non-WiFi interference sources (microwave ovens, Bluetooth, cordless phones) using a spectrum analyzer or Mist's built-in spectrum analysis.\n"
+                    "5. Enable Mist Auto-RRM to dynamically adjust channel and power assignments based on real-time RF conditions.\n"
+                    "6. For persistent interference in warehouse environments, consider deploying directional antennas to reduce signal bleed between aisles."
+                ),
+                "remediation_action": "optimize_channels",
                 "error_message": (
                     "INTERFERENCE_DETECTED event_id=mist-rf-{channel_number}: "
                     "ap_name={ap_name} channel={channel_number} "
@@ -353,6 +426,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["wifi-controller", "dns-dhcp-service"],
                 "cascade_services": ["network-controller"],
                 "description": "RADIUS authentication requests spiking beyond server capacity",
+                "investigation_notes": (
+                    "1. Check RADIUS server logs: `journalctl -u freeradius -f` or NPS Event Viewer — look for repeated Access-Reject with reason codes.\n"
+                    "2. Identify the NAS (Network Access Server) generating the storm: the NAS IP in the logs points to a specific WLC or switch.\n"
+                    "3. Common root cause: a certificate change on the RADIUS server breaks PEAP-MSCHAPv2 — all clients simultaneously retry authentication.\n"
+                    "4. Check for a Group Policy update that changed supplicant settings: `netsh wlan show profiles` on affected Windows clients.\n"
+                    "5. As immediate mitigation, enable RADIUS rate limiting on the WLC: set max auth requests per second per SSID.\n"
+                    "6. If the RADIUS server is overloaded, temporarily switch the SSID to PSK or MAC-auth bypass for critical warehouse devices while investigating."
+                ),
+                "remediation_action": "reset_radius_service",
                 "error_message": (
                     "AUTH_FAILURE_STORM event_id=mist-auth-storm: "
                     "rate={auth_requests_per_sec}/s (threshold {auth_threshold}/s), "
@@ -378,6 +460,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["dns-dhcp-service", "network-controller"],
                 "cascade_services": ["digital-marketplace", "auction-engine", "cloud-inventory-scanner"],
                 "description": "DNS queries traversing VPN tunnel failing to resolve internal records",
+                "investigation_notes": (
+                    "1. Verify VPN tunnel status first: if the tunnel carrying DNS traffic is down, all forwarded queries will fail — check `show vpn ike-sa` / `show vpn ipsec-sa`.\n"
+                    "2. Test DNS resolution from within the tunnel: `dig @<forwarder_ip> <query_name> +tcp` — if TCP works but UDP fails, MTU/fragmentation is the issue.\n"
+                    "3. Check `named.conf` forwarder configuration: ensure both primary and fallback forwarders are reachable over the VPN and DNS port 53 is permitted.\n"
+                    "4. Run `rndc querylog on` to enable query logging on the DNS server, then trace the query path to identify where resolution breaks.\n"
+                    "5. If the forwarder is in Azure, verify Azure Private DNS zone is linked to the correct VNet and conditional forwarding rules are configured.\n"
+                    "6. As a workaround, add static host entries for critical internal services to `/etc/hosts` or Windows DNS client cache while resolving the VPN issue."
+                ),
+                "remediation_action": "restart_dns_forwarder",
                 "error_message": (
                     "named[12345]: NAMED-SERVFAIL-FORWARDER: query '{dns_query_name}' "
                     "type {dns_query_type} via tunnel {vpn_tunnel_name}: "
@@ -403,6 +494,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["dns-dhcp-service", "network-controller"],
                 "cascade_services": ["wifi-controller", "packaging-fulfillment"],
                 "description": "DHCP scope exhaustion from excessive DISCOVER/REQUEST rate",
+                "investigation_notes": (
+                    "1. Run `dhcpd -T` or check `dhcpd.leases` to list all active leases and identify which scope is exhausted.\n"
+                    "2. Look for a rogue DHCP server: `show ip dhcp snooping binding` on the switch, or use a packet capture to find unauthorized DHCPOFFER packets.\n"
+                    "3. High DISCOVER rate with many NAKs indicates clients are not getting leases — either the pool is truly full or lease times are too long.\n"
+                    "4. Reduce lease duration from the default (24h) to 4-8h for warehouse WiFi devices that frequently roam between subnets.\n"
+                    "5. Check for IP address conflicts: `arping -D <ip>` on suspected duplicate IPs — a rogue server offering overlapping ranges causes scope confusion.\n"
+                    "6. Expand the DHCP scope or add a secondary scope with a DHCP relay (`ip helper-address`) if the subnet legitimately needs more addresses."
+                ),
+                "remediation_action": "expand_dhcp_scope",
                 "error_message": (
                     "dhcpd[6789]: DHCPD-LEASE-EXHAUSTION: pool {dhcp_scope} at {dhcp_util_pct}% "
                     "({dhcp_active_leases}/{dhcp_total_leases} leases), "
@@ -428,6 +528,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["auction-engine", "digital-marketplace"],
                 "cascade_services": ["network-controller", "firewall-gateway"],
                 "description": "Real-time bid processing latency exceeding SLA thresholds",
+                "investigation_notes": (
+                    "1. Check the bid processing queue depth in the Go auction-engine metrics — a queue depth above 500 indicates the goroutine pool is saturated.\n"
+                    "2. Examine WebSocket broadcast latency: `ws_delay_ms` above 1000ms means the hub.broadcastBidUpdate is falling behind real-time.\n"
+                    "3. Profile the database: `EXPLAIN ANALYZE` on the bid INSERT and auction UPDATE queries — lock contention on the `auctions` table during high-bid periods is common.\n"
+                    "4. Check Redis pub/sub for bid event fanout delays: `redis-cli --latency-history -i 1` — if Redis is slow, all downstream WebSocket clients stall.\n"
+                    "5. Scale horizontally: increase the auction-engine replica count in EKS and verify the ALB is distributing WebSocket connections evenly.\n"
+                    "6. For immediate relief, increase the goroutine pool size and bid queue buffer, and enable connection draining on the load balancer."
+                ),
+                "remediation_action": "scale_auction_service",
                 "error_message": (
                     'level=error ts=2025-01-15T14:32:01.234Z caller=bid_processor.go:289 '
                     'msg="BID_LATENCY_SLA_BREACH" auction={auction_id} bid={bid_id} '
@@ -460,6 +569,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["digital-marketplace", "auction-engine"],
                 "cascade_services": ["firewall-gateway"],
                 "description": "Payment gateway requests timing out, affecting checkout and auction settlements",
+                "investigation_notes": (
+                    "1. Check the payment provider status page (e.g., status.stripe.com) — gateway timeouts are often caused by provider-side degradation.\n"
+                    "2. Review the HTTP response codes: 504 (Gateway Timeout) and 503 (Service Unavailable) indicate the provider is overloaded; 429 means rate limiting.\n"
+                    "3. Verify the firewall is not blocking or throttling outbound HTTPS to payment endpoints: `show session all filter destination <gateway_ip>`.\n"
+                    "4. Check connection pool exhaustion in the marketplace service: `netstat -an | grep <gateway_ip> | wc -l` — too many TIME_WAIT connections indicate pool leak.\n"
+                    "5. Implement circuit breaker pattern: after 3 consecutive timeouts to a provider, failover to the backup provider (e.g., Stripe -> Adyen).\n"
+                    "6. Queue failed payment retries in SQS/SNS with exponential backoff rather than blocking the checkout flow — return a pending status to the user."
+                ),
+                "remediation_action": "reset_payment_gateway",
                 "error_message": (
                     "[PaymentHandler] PAYMENT_GATEWAY_TIMEOUT: order={order_id} "
                     "provider={payment_provider} timeout={payment_timeout_ms}ms "
@@ -488,6 +606,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["digital-marketplace", "card-printing-system"],
                 "cascade_services": ["auction-engine"],
                 "description": "Product catalog replication between marketplace and printing system failing",
+                "investigation_notes": (
+                    "1. Check the catalog_replicator logs for the specific error detail — 'schema version mismatch' means a migration ran on one side but not the other.\n"
+                    "2. For 'primary key conflict on sku column', identify the duplicate SKUs: `SELECT sku, COUNT(*) FROM products GROUP BY sku HAVING COUNT(*) > 1`.\n"
+                    "3. 'Connection reset by peer' during sync indicates a network interruption — check if the VPN tunnel between AWS (printing) and marketplace DB is stable.\n"
+                    "4. 'Timeout waiting for lock on products table' means a long-running transaction is holding a row lock — find it with `SELECT * FROM information_schema.innodb_trx`.\n"
+                    "5. If sync has been broken for hours, do not attempt a full resync during business hours — schedule it for the maintenance window to avoid locking the catalog.\n"
+                    "6. As a workaround, enable the read-only cache mode on the marketplace so users see stale-but-consistent data while the sync recovers."
+                ),
+                "remediation_action": "resync_catalog",
                 "error_message": (
                     "[CatalogReplicator] CATALOG_SYNC_FAILURE: "
                     "{catalog_sync_failed}/{catalog_sync_total} records failed syncing "
@@ -519,6 +646,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["card-printing-system", "packaging-fulfillment"],
                 "cascade_services": ["digital-marketplace"],
                 "description": "Print job queue exceeding buffer capacity, new jobs being rejected",
+                "investigation_notes": (
+                    "1. Check printer status on the MES console: `PAPER_JAM`, `INK_LOW`, `HEAD_CLOG`, or `OFFLINE` each require different physical intervention.\n"
+                    "2. Review the oldest pending job age — jobs stuck for 30+ minutes indicate the printer is not processing, not just slow.\n"
+                    "3. For HP Indigo 7K: check the BID (Binary Ink Developer) levels and impression drum status via the Indigo PrintOS dashboard.\n"
+                    "4. Verify the RIP (Raster Image Processor) server is not the bottleneck: high CPU on the RIP server means complex card designs are choking the pipeline.\n"
+                    "5. Redistribute queued jobs to other available printers: `mes-cli reassign-queue --from <printer> --to <available_printer> --priority high`.\n"
+                    "6. If the queue is critically full, pause incoming orders from the marketplace and display a 'printing delayed' banner to prevent further queue growth."
+                ),
+                "remediation_action": "drain_print_queue",
                 "error_message": (
                     "[PrintScheduler] MES-QUEUE-OVERFLOW: "
                     "queue={print_queue_depth}/{print_queue_max} ({print_queue_pct}%) "
@@ -548,6 +684,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["card-printing-system", "packaging-fulfillment"],
                 "cascade_services": ["digital-marketplace", "auction-engine"],
                 "description": "Automated quality inspection system rejecting cards above acceptable defect rate",
+                "investigation_notes": (
+                    "1. Identify the primary defect type: `color_registration_shift` and `die_cut_misalignment` are mechanical issues; `foil_stamp_incomplete` is heat/pressure related.\n"
+                    "2. Check the QC camera calibration: if the vision system is miscalibrated, it may be rejecting good cards — run `mes-qc calibrate --line <line>`.\n"
+                    "3. For `centering_off` defects, inspect the sheet feeder alignment and gripper pressure on the affected print line.\n"
+                    "4. Review the defect rate trend: a gradual increase indicates wear (replace cutting dies or print heads); a sudden spike indicates a material batch problem.\n"
+                    "5. Cross-reference the reject batch with the paper/cardstock lot number — a bad material lot will cause consistent defects across all printers.\n"
+                    "6. If the defect rate exceeds 10%, halt the production line for mechanical inspection rather than wasting material on continued rejects."
+                ),
+                "remediation_action": "recalibrate_qc_sensors",
                 "error_message": (
                     "[QCInspector] MES-QC-REJECT-THRESHOLD: batch={qc_batch_id} "
                     "rejected={qc_reject_count}/{qc_inspected_count} "
@@ -577,6 +722,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["packaging-fulfillment", "card-printing-system"],
                 "cascade_services": ["digital-marketplace"],
                 "description": "Shipping label printers going offline or producing unreadable labels",
+                "investigation_notes": (
+                    "1. Check the Zebra printer error code: E1001 = print head overheated, E2003 = ribbon empty, E3005 = label gap detection failure, E4002 = paper out.\n"
+                    "2. For OFFLINE status, verify the network connection: `ping <printer_ip>` and check the switch port: `show interface <port> status`.\n"
+                    "3. HEAD_ERROR requires print head replacement — Zebra ZT411/ZT421 heads have a ~50km print life; check the odometer in the printer menu.\n"
+                    "4. Unreadable labels (barcode scan failures) indicate print darkness is too low or the thermal ribbon is wrinkled — run a test label: `^XA^FO50,50^BY3^BCN,100,Y,N,N^FD1234567890^FS^XZ`.\n"
+                    "5. Queue depth above 200 while the printer is offline means shipments are stacking up — redirect traffic to a backup Zebra printer immediately.\n"
+                    "6. For carrier-specific label format issues (ZPL vs EPL), verify the printer firmware supports the required label format and update if needed."
+                ),
+                "remediation_action": "restart_label_printer",
                 "error_message": (
                     "wms.shipping WMS-LABEL-PRINTER-FAULT printer={label_printer_id} "
                     "status={label_printer_status} error_code={label_error_code} "
@@ -607,6 +761,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["packaging-fulfillment", "cloud-inventory-scanner"],
                 "cascade_services": ["digital-marketplace", "card-printing-system"],
                 "description": "Barcode scanners losing synchronization with inventory management system",
+                "investigation_notes": (
+                    "1. Check scanner WiFi signal strength: -72 dBm is marginal — scanners need at least -67 dBm for reliable real-time sync in warehouse environments.\n"
+                    "2. Verify the scanner firmware version: v3.0.x has known sync bugs with the WMS REST API — upgrade to v3.2.1 which includes the keepalive fix.\n"
+                    "3. Battery at 34% can cause intermittent WiFi disconnections on Zebra MC9300 scanners — swap batteries and check if sync recovers.\n"
+                    "4. Missed scans create inventory deltas — run a zone reconciliation: `wms-cli reconcile --zone <zone> --source physical-count`.\n"
+                    "5. If multiple scanners in the same zone are desyncing, the issue is likely the WiFi AP in that zone — check AP health (correlate with Channel 7/8).\n"
+                    "6. As a workaround, switch scanners to batch/store-and-forward mode until WiFi is stable, then bulk-upload when connectivity is restored."
+                ),
+                "remediation_action": "resync_scanners",
                 "error_message": (
                     "wms.inventory WMS-SCANNER-DESYNC scanner={scanner_id} "
                     "zone={scanner_zone} last_sync={scanner_last_sync_sec}s "
@@ -636,6 +799,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["cloud-inventory-scanner", "network-controller"],
                 "cascade_services": ["firewall-gateway"],
                 "description": "Cloud resources detected without owner tags or associated workloads",
+                "investigation_notes": (
+                    "1. Query the cloud-inventory-scanner report for full orphan details: resource type, region, age, and daily cost.\n"
+                    "2. Cross-reference the resource ID with Terraform state: `terraform state list | grep <resource_id>` — if present, the tag was stripped by a manual edit.\n"
+                    "3. Check CloudTrail/Activity Log/Audit Log for who created the resource: `aws cloudtrail lookup-events --lookup-attributes AttributeKey=ResourceName,AttributeValue=<id>`.\n"
+                    "4. If the resource has no security group rules allowing inbound traffic and no associated ENI/NIC, it is likely safe to terminate.\n"
+                    "5. For resources older than 30 days with no owner, follow the governance runbook: tag as `pending-termination`, notify via Slack, terminate after 7-day grace.\n"
+                    "6. Prevent recurrence by enforcing AWS SCP / Azure Policy / GCP Organization Policy that denies resource creation without required `owner` and `team` tags."
+                ),
+                "remediation_action": "tag_or_terminate_resource",
                 "error_message": (
                     "cloud-governance CLOUD-ORPHANED-RESOURCE "
                     "resource_type={cloud_resource_type} resource_id={cloud_resource_id} "
@@ -667,6 +839,15 @@ class FanaticsScenario(BaseScenario):
                 "affected_services": ["cloud-inventory-scanner", "network-controller"],
                 "cascade_services": ["dns-dhcp-service", "firewall-gateway"],
                 "description": "Site-to-site VPN tunnels between cloud providers repeatedly going up and down",
+                "investigation_notes": (
+                    "1. Check IKE Phase status: Phase 1 FAILED means pre-shared key mismatch or proposal mismatch; Phase 2 FAILED means IPSec SA negotiation issue.\n"
+                    "2. Verify DPD (Dead Peer Detection) settings match on both ends — mismatched DPD intervals cause one side to tear down the tunnel while the other thinks it is up.\n"
+                    "3. For AWS VPN: check `aws ec2 describe-vpn-connections --vpn-connection-id <id>` for tunnel status and CloudWatch VPN metrics.\n"
+                    "4. For Azure VPN Gateway: check `az network vpn-connection show` and look for IKE SA rekey failures in the diagnostic logs.\n"
+                    "5. MTU issues cause tunnel flapping under load — set TCP MSS clamping to 1360 on both VPN endpoints and test with large transfers.\n"
+                    "6. If the tunnel is flapping on rekey (SA_EXPIRED), increase the IKE lifetime and IPSec SA lifetime to reduce rekey frequency during peak traffic."
+                ),
+                "remediation_action": "reset_vpn_tunnel",
                 "error_message": (
                     "cloud-networking VPN-TUNNEL-FLAP tunnel={vpn_tunnel_name} "
                     "path={vpn_src_cloud}->{vpn_dst_cloud} flaps={vpn_flap_count} "
@@ -1031,6 +1212,226 @@ class FanaticsScenario(BaseScenario):
             FirewallGatewayService,
             DnsDhcpService,
         ]
+
+    # ── Trace Attributes & RCA ───────────────────────────────────────
+
+    def get_trace_attributes(self, service_name: str, rng) -> dict:
+        met_s = int(time.time()) % 86400
+        base = {
+            "platform.region": rng.choice(["us-east-1", "us-central1", "eastus"]),
+            "platform.traffic_tier": rng.choice(["normal", "normal", "elevated", "peak"]),
+        }
+        svc_attrs = {
+            "card-printing-system": {
+                "print.batch_id": f"BATCH-{rng.randint(1000, 9999)}",
+                "print.card_rarity": rng.choice(["common", "uncommon", "rare", "ultra-rare", "1-of-1"]),
+                "print.line_number": rng.choice(["LINE-A", "LINE-B", "LINE-C"]),
+                "print.substrate": rng.choice(["standard-cardstock", "chrome-foil", "refractor-film", "acetate"]),
+            },
+            "digital-marketplace": {
+                "marketplace.listing_type": rng.choice(["buy-now", "auction", "make-offer", "pre-order"]),
+                "marketplace.price_tier": rng.choice(["budget", "mid-range", "premium", "ultra-premium"]),
+                "marketplace.cart_items": rng.randint(1, 12),
+                "marketplace.session_type": rng.choice(["browse", "search", "checkout", "watchlist"]),
+            },
+            "auction-engine": {
+                "auction.state": rng.choice(["accepting_bids", "going_once", "going_twice", "closed", "extending"]),
+                "auction.bid_count": rng.randint(1, 250),
+                "auction.reserve_met": rng.choice([True, True, True, False]),
+                "auction.time_remaining_s": rng.randint(0, 7200),
+            },
+            "packaging-fulfillment": {
+                "warehouse.zone": rng.choice(["receiving", "storage-A", "storage-B", "packing", "shipping-dock"]),
+                "warehouse.pick_velocity": rng.choice(["normal", "express", "priority", "rush"]),
+                "warehouse.carrier": rng.choice(["UPS", "FedEx", "USPS", "DHL"]),
+                "warehouse.package_weight_oz": round(rng.uniform(2.0, 48.0), 1),
+            },
+            "wifi-controller": {
+                "wifi.ssid": rng.choice(["Fanatics-Corp", "Fanatics-Warehouse", "Fanatics-Guest", "Fanatics-IoT"]),
+                "wifi.band": rng.choice(["2.4GHz", "5GHz", "6GHz"]),
+                "wifi.ap_count": rng.randint(20, 120),
+                "wifi.client_count": rng.randint(50, 800),
+            },
+            "cloud-inventory-scanner": {
+                "cloud_scan.provider": rng.choice(["aws", "azure", "gcp"]),
+                "cloud_scan.resource_count": rng.randint(200, 5000),
+                "cloud_scan.compliance_pct": round(rng.uniform(75.0, 99.5), 1),
+                "cloud_scan.orphan_count": rng.randint(0, 45),
+            },
+            "network-controller": {
+                "network.switch_tier": rng.choice(["core", "distribution", "access", "spine", "leaf"]),
+                "network.vlan_count": rng.randint(20, 200),
+                "network.port_utilization_pct": round(rng.uniform(30.0, 95.0), 1),
+                "network.protocol": rng.choice(["OSPF", "BGP", "RSTP", "LACP"]),
+            },
+            "firewall-gateway": {
+                "firewall.zone_pair": rng.choice(["TRUST->UNTRUST", "UNTRUST->DMZ", "TRUST->DMZ", "DMZ->TRUST"]),
+                "firewall.policy_count": rng.randint(400, 2500),
+                "firewall.session_rate": rng.randint(2000, 12000),
+                "firewall.threat_level": rng.choice(["low", "medium", "high", "critical"]),
+            },
+            "dns-dhcp-service": {
+                "dns.query_type": rng.choice(["A", "AAAA", "CNAME", "SRV", "PTR", "MX"]),
+                "dns.zone": rng.choice(["fanatics.internal", "warehouse.local", "collectibles.prod"]),
+                "dhcp.scope_utilization_pct": round(rng.uniform(40.0, 98.0), 1),
+                "dhcp.lease_duration_s": rng.choice([3600, 7200, 14400, 28800, 86400]),
+            },
+        }
+        base.update(svc_attrs.get(service_name, {}))
+        return base
+
+    def get_rca_clues(self, channel: int, service_name: str, rng) -> dict:
+        clues = {
+            1: {  # MAC Address Flapping
+                "network-controller": {"switching.flap_port": rng.choice(["Gi0/0/1", "Gi0/0/3", "Te1/0/2"]), "switching.mac_table_util_pct": round(rng.uniform(85, 98), 1)},
+                "dns-dhcp-service": {"dhcp.arp_conflict_detected": True, "dhcp.stale_lease_mac": "00:11:22:33:44:55"},
+                "firewall-gateway": {"firewall.arp_inspection_failures": rng.randint(20, 200), "firewall.zone_affected": "TRUST"},
+                "wifi-controller": {"wifi.client_roam_storm": True, "wifi.affected_ssid": "Fanatics-Warehouse"},
+            },
+            2: {  # Spanning Tree Topology Change
+                "network-controller": {"stp.root_bridge_change": True, "stp.tcn_source_port": rng.choice(["Gi0/0/2", "Po1", "Te1/0/1"])},
+                "firewall-gateway": {"firewall.l2_loop_detected": True, "firewall.broadcast_storm_pps": rng.randint(5000, 50000)},
+                "dns-dhcp-service": {"dns.resolution_flapping": True, "dns.affected_zone": "fanatics.internal"},
+                "wifi-controller": {"wifi.uplink_state": "flapping", "wifi.ap_isolation_triggered": rng.randint(2, 10)},
+            },
+            3: {  # BGP Peer Flapping
+                "network-controller": {"bgp.hold_timer_misconfig": True, "bgp.prefix_withdraw_count": rng.randint(50, 500)},
+                "firewall-gateway": {"firewall.bgp_port_179_drops": rng.randint(10, 100), "firewall.policy_id_blocking": f"rule-{rng.randint(100,999)}"},
+                "dns-dhcp-service": {"dns.forwarder_unreachable": True, "dns.affected_queries_pct": round(rng.uniform(30, 80), 1)},
+                "cloud-inventory-scanner": {"cloud_scan.cross_cloud_route_missing": True, "cloud_scan.affected_provider": rng.choice(["aws", "azure"])},
+            },
+            4: {  # Firewall Session Table Exhaustion
+                "firewall-gateway": {"firewall.top_session_source": f"10.{rng.randint(1,254)}.{rng.randint(1,254)}.{rng.randint(1,254)}", "firewall.tcp_timeout_config": 3600},
+                "network-controller": {"network.qos_drops_increasing": True, "network.affected_queue": rng.choice(["Q1-PRIORITY", "Q3-BEST-EFFORT"])},
+                "digital-marketplace": {"marketplace.connection_pool_exhausted": True, "marketplace.pending_checkouts": rng.randint(50, 500)},
+                "auction-engine": {"auction.websocket_failures": rng.randint(20, 200), "auction.bid_timeouts": rng.randint(5, 50)},
+            },
+            5: {  # Firewall CPU Overload
+                "firewall-gateway": {"firewall.dp_cpu_offender": rng.choice(["ssl-decrypt", "threat-prevention", "url-filtering"]), "firewall.packet_buffer_pct": round(rng.uniform(80, 98), 1)},
+                "network-controller": {"network.throughput_degraded": True, "network.latency_spike_ms": rng.randint(50, 500)},
+                "dns-dhcp-service": {"dns.query_timeout_pct": round(rng.uniform(15, 60), 1), "dns.upstream_latency_ms": rng.randint(200, 2000)},
+                "digital-marketplace": {"marketplace.page_load_ms": rng.randint(3000, 15000), "marketplace.ssl_handshake_failures": rng.randint(10, 100)},
+            },
+            6: {  # SSL Decryption Certificate Expiry
+                "firewall-gateway": {"firewall.cert_serial": f"{rng.randint(100000,999999):X}", "firewall.decryption_bypass_count": rng.randint(100, 5000)},
+                "dns-dhcp-service": {"dns.tls_dot_failures": rng.randint(10, 200), "dns.fallback_to_udp": True},
+                "digital-marketplace": {"marketplace.checkout_ssl_errors": rng.randint(20, 300), "marketplace.customer_complaints": rng.randint(5, 50)},
+                "auction-engine": {"auction.wss_handshake_failures": rng.randint(10, 100), "auction.bidder_disconnects": rng.randint(5, 80)},
+            },
+            7: {  # WiFi AP Disconnect Storm
+                "wifi-controller": {"wifi.capwap_tunnel_down": rng.randint(5, 20), "wifi.poe_budget_exceeded": rng.choice([True, False])},
+                "network-controller": {"network.switch_port_down_count": rng.randint(3, 15), "network.poe_watts_available": rng.randint(0, 50)},
+                "packaging-fulfillment": {"warehouse.scanner_offline_count": rng.randint(2, 10), "warehouse.pick_rate_degraded": True},
+                "card-printing-system": {"print.mes_connectivity_lost": True, "print.jobs_queued_offline": rng.randint(10, 100)},
+            },
+            8: {  # WiFi Channel Interference
+                "wifi-controller": {"wifi.co_channel_aps": rng.randint(5, 15), "wifi.rrm_auto_channel_change": rng.choice([True, False])},
+                "network-controller": {"network.wlan_vlan_util_pct": round(rng.uniform(70, 95), 1), "network.broadcast_domain_size": rng.randint(200, 800)},
+                "packaging-fulfillment": {"warehouse.scanner_retry_rate_pct": round(rng.uniform(15, 50), 1), "warehouse.throughput_degraded": True},
+            },
+            9: {  # Client Authentication Storm
+                "wifi-controller": {"wifi.radius_queue_depth": rng.randint(200, 1000), "wifi.eap_type": "PEAP-MSCHAPv2"},
+                "dns-dhcp-service": {"dhcp.new_lease_failures": rng.randint(20, 200), "dhcp.auth_dependent_scope": rng.choice(["10.1.0.0/24", "10.2.0.0/24"])},
+                "network-controller": {"network.dot1x_failures_per_sec": rng.randint(50, 500), "network.radius_server_load_pct": round(rng.uniform(85, 100), 1)},
+            },
+            10: {  # DNS Resolution Failure Over VPN
+                "dns-dhcp-service": {"dns.forwarder_timeout_ms": rng.randint(3000, 10000), "dns.vpn_dependent_zones": rng.randint(3, 12)},
+                "network-controller": {"network.vpn_tunnel_state": "DOWN", "network.ipsec_sa_expired": True},
+                "digital-marketplace": {"marketplace.internal_api_dns_failures": rng.randint(50, 500), "marketplace.service_discovery_degraded": True},
+                "auction-engine": {"auction.api_hostname_unresolvable": True, "auction.failover_to_ip": True},
+                "cloud-inventory-scanner": {"cloud_scan.cross_cloud_dns_broken": True, "cloud_scan.affected_provider": rng.choice(["aws", "azure", "gcp"])},
+            },
+            11: {  # DHCP Lease Storm
+                "dns-dhcp-service": {"dhcp.pool_exhaustion_pct": round(rng.uniform(95, 100), 1), "dhcp.rogue_server_detected": True},
+                "network-controller": {"network.dhcp_snooping_violations": rng.randint(10, 200), "network.affected_vlan": rng.choice([100, 200, 300])},
+                "wifi-controller": {"wifi.clients_no_ip": rng.randint(20, 200), "wifi.dhcp_relay_failures": rng.randint(10, 100)},
+                "packaging-fulfillment": {"warehouse.device_offline_no_ip": rng.randint(5, 30), "warehouse.zone_affected": rng.choice(["receiving", "packing", "shipping"])},
+            },
+            12: {  # Auction Bid Latency Spike
+                "auction-engine": {"auction.goroutine_pool_saturated": True, "auction.bid_queue_depth": rng.randint(500, 2000)},
+                "digital-marketplace": {"marketplace.ws_broadcast_delay_ms": rng.randint(1000, 5000), "marketplace.stale_bid_display_count": rng.randint(10, 200)},
+                "network-controller": {"network.alb_latency_ms": rng.randint(100, 1000), "network.connection_draining": False},
+                "firewall-gateway": {"firewall.ws_inspection_overhead_ms": rng.randint(20, 200), "firewall.deep_packet_inspection_enabled": True},
+            },
+            13: {  # Payment Processing Timeout
+                "digital-marketplace": {"marketplace.payment_circuit_breaker": rng.choice(["CLOSED", "HALF_OPEN", "OPEN"]), "marketplace.failed_checkout_count": rng.randint(10, 200)},
+                "auction-engine": {"auction.settlement_backlog": rng.randint(5, 100), "auction.payment_retry_queue": rng.randint(3, 50)},
+                "firewall-gateway": {"firewall.outbound_https_throttled": rng.choice([True, False]), "firewall.payment_gateway_sessions": rng.randint(500, 5000)},
+            },
+            14: {  # Product Catalog Sync Failure
+                "digital-marketplace": {"marketplace.catalog_staleness_min": rng.randint(30, 360), "marketplace.sku_mismatch_count": rng.randint(20, 500)},
+                "card-printing-system": {"print.catalog_version": f"v{rng.randint(1,5)}.{rng.randint(0,9)}.{rng.randint(0,9)}", "print.schema_migration_pending": True},
+                "auction-engine": {"auction.listing_sync_gap": rng.randint(10, 200), "auction.phantom_listings": rng.randint(2, 30)},
+            },
+            15: {  # Print Queue Overflow
+                "card-printing-system": {"print.printer_status": rng.choice(["PAPER_JAM", "INK_LOW", "HEAD_CLOG"]), "print.rip_server_cpu_pct": round(rng.uniform(85, 100), 1)},
+                "packaging-fulfillment": {"warehouse.pending_packages_no_cards": rng.randint(20, 200), "warehouse.fulfillment_sla_breach": True},
+                "digital-marketplace": {"marketplace.order_delay_notification_count": rng.randint(50, 500), "marketplace.printing_backlog_hours": rng.randint(4, 48)},
+            },
+            16: {  # Quality Control Rejection Spike
+                "card-printing-system": {"print.defect_type": rng.choice(["color_registration_shift", "die_cut_misalignment", "foil_stamp_incomplete"]), "print.material_lot": f"LOT-{rng.randint(2024001, 2024999)}"},
+                "packaging-fulfillment": {"warehouse.reprint_queue_depth": rng.randint(20, 200), "warehouse.wasted_material_sheets": rng.randint(50, 500)},
+                "digital-marketplace": {"marketplace.out_of_stock_skus": rng.randint(5, 50), "marketplace.customer_refund_queue": rng.randint(3, 30)},
+                "auction-engine": {"auction.delayed_shipment_auctions": rng.randint(2, 20), "auction.buyer_dispute_count": rng.randint(1, 10)},
+            },
+            17: {  # Fulfillment Label Printer Failure
+                "packaging-fulfillment": {"warehouse.label_printer_error": rng.choice(["E1001", "E2003", "E3005"]), "warehouse.shipments_held": rng.randint(50, 500)},
+                "card-printing-system": {"print.completed_no_label": rng.randint(20, 200), "print.staging_area_full": True},
+                "digital-marketplace": {"marketplace.shipping_delay_orders": rng.randint(50, 500), "marketplace.tracking_unavailable_count": rng.randint(30, 300)},
+            },
+            18: {  # Warehouse Scanner Desync
+                "packaging-fulfillment": {"warehouse.inventory_drift_items": rng.randint(20, 200), "warehouse.scanner_firmware": rng.choice(["3.0.5", "3.1.8"])},
+                "cloud-inventory-scanner": {"cloud_scan.physical_digital_mismatch": rng.randint(10, 100), "cloud_scan.reconciliation_failures": rng.randint(5, 50)},
+                "digital-marketplace": {"marketplace.phantom_stock_skus": rng.randint(5, 50), "marketplace.oversold_orders": rng.randint(1, 20)},
+                "card-printing-system": {"print.reprint_triggered_by_desync": rng.randint(3, 30), "print.inventory_hold": True},
+            },
+            19: {  # Orphaned Cloud Resource Alert
+                "cloud-inventory-scanner": {"cloud_scan.orphan_daily_cost_usd": round(rng.uniform(50, 2000), 2), "cloud_scan.oldest_orphan_days": rng.randint(14, 180)},
+                "network-controller": {"network.orphan_security_group_rules": rng.randint(5, 50), "network.untagged_eni_count": rng.randint(3, 30)},
+                "firewall-gateway": {"firewall.orphan_nat_rules": rng.randint(2, 20), "firewall.stale_address_objects": rng.randint(10, 100)},
+            },
+            20: {  # Cross-Cloud VPN Tunnel Flapping
+                "cloud-inventory-scanner": {"cloud_scan.vpn_dependent_services": rng.randint(3, 9), "cloud_scan.cross_cloud_latency_ms": rng.randint(200, 2000)},
+                "network-controller": {"network.ike_rekey_failures": rng.randint(3, 20), "network.mtu_mismatch_detected": rng.choice([True, False])},
+                "dns-dhcp-service": {"dns.cross_cloud_resolution_broken": True, "dns.conditional_forwarder_down": rng.choice(["aws-to-azure", "gcp-to-azure"])},
+                "firewall-gateway": {"firewall.ipsec_esp_drops": rng.randint(100, 5000), "firewall.dpd_timeout_count": rng.randint(5, 50)},
+            },
+        }
+        channel_clues = clues.get(channel, {})
+        return channel_clues.get(service_name, {})
+
+    def get_correlation_attribute(self, channel: int, is_error: bool, rng) -> dict:
+        correlation_attrs = {
+            1: ("deployment.release_train", "net-core-v2.8.1-canary"),
+            2: ("infra.stp_firmware", "ios-xe-17.9.4a-prerelease"),
+            3: ("network.bgp_policy_rev", "route-policy-v3.2.0-rc1"),
+            4: ("infra.fw_session_config", "pan-os-11.1.3-hotfix2"),
+            5: ("deployment.threat_sig_ver", "content-8845-8432-experimental"),
+            6: ("infra.cert_chain_bundle", "internal-ca-v2-cross-signed"),
+            7: ("deployment.ap_firmware", "mist-fw-0.14.29313-beta"),
+            8: ("infra.rrm_algorithm", "auto-rrm-v3.1-aggressive"),
+            9: ("deployment.radius_config", "nps-policy-2025q1-draft"),
+            10: ("network.vpn_ike_profile", "ikev2-profile-aes256-sha512"),
+            11: ("infra.dhcp_failover_mode", "dhcpd-hot-standby-v2"),
+            12: ("deployment.auction_runtime", "go1.22-race-detect-enabled"),
+            13: ("infra.payment_gateway_sdk", "stripe-sdk-v14.2.0-beta3"),
+            14: ("deployment.catalog_schema_ver", "schema-v5.3.0-migration-pending"),
+            15: ("infra.rip_server_config", "fiery-rip-v4.0.1-preview"),
+            16: ("deployment.qc_vision_model", "defect-detect-v2.1.0-retrained"),
+            17: ("infra.label_zpl_version", "zebra-zpl-ii-v6.1-patched"),
+            18: ("deployment.scanner_firmware", "mc9300-fw-3.0.5-known-bug"),
+            19: ("infra.cloud_policy_ver", "org-policy-v2.4.0-unenforced"),
+            20: ("network.vpn_gw_firmware", "vgw-strongswan-5.9.14-rc2"),
+        }
+        attr_key, attr_val = correlation_attrs.get(channel, ("deployment.release_train", "unknown"))
+        # 90% on errors, 5% on healthy
+        if is_error:
+            if rng.random() < 0.90:
+                return {attr_key: attr_val}
+        else:
+            if rng.random() < 0.05:
+                return {attr_key: attr_val}
+        return {}
 
     # ── Fault Parameters ──────────────────────────────────────────────
 

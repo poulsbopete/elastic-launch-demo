@@ -389,12 +389,32 @@ async def chaos_resolve(body: dict):
     return result
 
 
+@app.post("/api/chaos/spikes")
+async def set_chaos_spikes(body: dict):
+    deployment_id = body.get("deployment_id")
+    inst = _get_instance(deployment_id)
+    if not inst:
+        return JSONResponse(status_code=404, content={"error": "No active deployment"})
+    inst.chaos_controller.set_infra_spikes(body)
+    return inst.chaos_controller.get_infra_spikes()
+
+
+@app.get("/api/chaos/spikes")
+async def get_chaos_spikes(deployment_id: Optional[str] = None):
+    inst = _get_instance(deployment_id)
+    if not inst:
+        return {"cpu_pct": 0, "memory_pct": 0, "k8s_oom_intensity": 0, "latency_multiplier": 1.0}
+    return inst.chaos_controller.get_infra_spikes()
+
+
 @app.get("/api/chaos/status")
 async def chaos_status(deployment_id: Optional[str] = None):
     inst = _get_instance(deployment_id)
     if not inst:
         return {}
-    return inst.chaos_controller.get_status()
+    status = inst.chaos_controller.get_status()
+    status["_infra_spikes"] = inst.chaos_controller.get_infra_spikes()
+    return status
 
 
 @app.get("/api/chaos/status/{channel}")

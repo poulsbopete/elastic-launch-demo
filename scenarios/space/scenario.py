@@ -127,6 +127,16 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["fuel-system", "sensor-validator"],
                 "cascade_services": ["mission-control", "range-safety"],
                 "description": "Thermal sensor calibration drifts outside acceptable bounds in the engine bay",
+                "investigation_notes": (
+                    "Root cause: thermocouple junction degradation or reference junction compensation "
+                    "failure causes progressive drift in TC-47 readings. Check calibration epoch age — "
+                    "epochs older than 4 hours under thermal cycling indicate recalibration is overdue. "
+                    "Verify cold-junction compensation circuit on the signal conditioning board (SCB-4). "
+                    "Cross-reference with adjacent sensors TC-48/49/50 to isolate single-sensor vs zone-wide drift. "
+                    "Remediation: run TCS_RECAL procedure from MCC console, update calibration coefficients "
+                    "in the sensor registry, and confirm readings converge within 2.5K tolerance band."
+                ),
+                "remediation_action": "recalibrate_engine",
                 "error_message": "[TCS] TCS-DRIFT-CRITICAL: sensor=TC-47 reading={deviation}K nominal=310.2K deviation=+{deviation}K epoch={epoch}",
                 "stack_trace": (
                     "== TELEMETRY FRAME DUMP == TCS THERMAL CONTROL SUBSYSTEM ==\n"
@@ -152,6 +162,16 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["fuel-system", "sensor-validator"],
                 "cascade_services": ["mission-control", "range-safety"],
                 "description": "Fuel tank pressure readings outside nominal range",
+                "investigation_notes": (
+                    "Root cause: helium pressurization regulator malfunction or cryogenic propellant "
+                    "boil-off exceeding bleed valve capacity. Check He supply bottle pressure (nominal 2840PSI) "
+                    "and regulator outlet (nominal 42PSI). If both LOX and RP-1 tanks are affected, suspect "
+                    "common-mode regulator failure; if single tank, check individual fill/drain valve seat "
+                    "integrity. Review CCTV for visible frost patterns indicating external leak. "
+                    "Remediation: switch to backup pressurization regulator (REG-B), verify tank pressure "
+                    "stabilizes within 60s, then safe the primary regulator for post-flight inspection."
+                ),
+                "remediation_action": "reset_fuel_system",
                 "error_message": "[PMS] PMS-PRESS-ANOMALY: tank={tank_id} pressure={pressure}PSI nominal={expected_min}-{expected_max}PSI status=OUT_OF_BOUNDS",
                 "stack_trace": (
                     "== TELEMETRY FRAME DUMP == PMS PROPULSION MGMT SYSTEM ==\n"
@@ -177,6 +197,16 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["fuel-system", "sensor-validator"],
                 "cascade_services": ["mission-control"],
                 "description": "Oxidizer flow rate deviates from commanded value",
+                "investigation_notes": (
+                    "Root cause: turbopump cavitation due to LOX inlet temperature rise or inlet pressure "
+                    "drop causing the pump to operate off its design curve. Verify LOX inlet temp (-183C nominal) "
+                    "and inlet pressure (290PSI nominal). Check turbopump RPM vs commanded — a 0.5% shortfall "
+                    "indicates bearing degradation. Inspect main oxidizer valve (MOV) position feedback for "
+                    "actuator slop. Cross-check mixture ratio — flow deviation >3% risks engine-rich shutdown. "
+                    "Remediation: adjust MOV trim position via PMS_FLOW_TRIM command, verify flow converges "
+                    "within 3% tolerance band. If turbopump RPM is low, safe the engine for inspection."
+                ),
+                "remediation_action": "recalibrate_engine",
                 "error_message": "[PMS] PMS-OXIDIZER-FLOW: measured={measured}kg/s commanded={commanded}kg/s delta={delta}% tolerance=3.0%",
                 "stack_trace": (
                     "== TELEMETRY FRAME DUMP == PMS OXIDIZER FLOW CONTROLLER ==\n"
@@ -202,6 +232,17 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["navigation", "sensor-validator"],
                 "cascade_services": ["mission-control", "range-safety"],
                 "description": "GPS receiver detecting multipath signal interference",
+                "investigation_notes": (
+                    "Root cause: ground-bounce multipath from launch structure or nearby buildings corrupting "
+                    "pseudorange measurements on low-elevation satellites. PDOP >6.0 indicates poor satellite "
+                    "geometry — check which SVs are flagged for multipath (SNR anomalies on G04, G07, G15). "
+                    "Verify antenna choke ring integrity and ground plane clearance. If >3 SVs affected, "
+                    "the GPS solution degrades below navigation-grade accuracy. "
+                    "Remediation: switch to IMU-primary navigation mode (GNC_NAV_MODE IMU_PRIMARY), mask "
+                    "multipath-affected SVs via SVMASK command, and schedule GPS reacquisition after clearing "
+                    "the launch structure multipath zone during ascent."
+                ),
+                "remediation_action": "recalibrate_navigation",
                 "error_message": "[GNC] GNC-GPS-MULTIPATH: sv_count={num_satellites} pdop=8.7 threshold=6.0 uncertainty={uncertainty}m",
                 "stack_trace": (
                     "== GN&C SYSTEM STATUS == GPS RECEIVER UNIT ==\n"
@@ -229,6 +270,17 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["navigation", "sensor-validator"],
                 "cascade_services": ["mission-control", "range-safety"],
                 "description": "Inertial measurement unit loses time synchronization",
+                "investigation_notes": (
+                    "Root cause: GPS 1PPS (one pulse-per-second) signal degradation or OCXO (oven-controlled "
+                    "crystal oscillator) aging drift causing the IMU time base to decouple from mission time. "
+                    "Check PPS signal integrity at the IMU input connector — signal amplitude <2.5V indicates "
+                    "cable or driver failure. Verify OCXO-A temperature stability (nominal 42C +/-0.5C). "
+                    "Single-axis drift suggests gyro bias shift on that axis; multi-axis drift points to clock source. "
+                    "Remediation: initiate IMU realignment sequence (GNC_IMU_ALIGN), switch PPS source to "
+                    "backup (PPS_SELECT GPS_1PPS_B), and verify drift converges below 3.0ms threshold. "
+                    "If OCXO drift persists, switch to redundant IMU-B."
+                ),
+                "remediation_action": "reset_guidance",
                 "error_message": "[GNC] GNC-IMU-SYNC-LOSS: axis={axis} drift={drift_ms}ms threshold={threshold_ms}ms sync_state=LOST",
                 "stack_trace": (
                     "== GN&C SYSTEM STATUS == IMU SYNCHRONIZATION ==\n"
@@ -253,6 +305,18 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["navigation", "sensor-validator"],
                 "cascade_services": ["mission-control"],
                 "description": "Star tracker optical alignment exceeds tolerance",
+                "investigation_notes": (
+                    "Root cause: boresight error from optical contamination (outgassing deposits on CCD window), "
+                    "thermal distortion of the star tracker mounting bracket, or stale star catalog. Only 8/22 "
+                    "catalog matches (minimum 12 required) suggests the field of view is shifted or obscured. "
+                    "Check CCD temperature (-28.4C nominal, should be <-25C for low dark current). Verify "
+                    "no thruster plume impingement on the optics baffle. Review attitude quaternion for sudden "
+                    "discontinuities indicating a bracket shift. "
+                    "Remediation: run optics bakeout heater cycle (ST_BAKEOUT 60s), reload backup star catalog "
+                    "(ST_CATALOG LOAD B), and attempt recalibration (ST_RECAL). If boresight error persists, "
+                    "switch to Star Tracker B and flag unit A for ground inspection."
+                ),
+                "remediation_action": "recalibrate_navigation",
                 "error_message": "[GNC] GNC-STAR-TRACKER-ALIGN: boresight_error={error_arcsec}arcsec limit={limit_arcsec}arcsec catalog_match=DEGRADED",
                 "stack_trace": (
                     "== GN&C SYSTEM STATUS == STAR TRACKER ASSEMBLY ==\n"
@@ -278,6 +342,17 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["comms-array", "sensor-validator"],
                 "cascade_services": ["mission-control", "telemetry-relay"],
                 "description": "S-band communication signal strength below minimum threshold",
+                "investigation_notes": (
+                    "Root cause: link budget degradation from reduced EIRP (38.2dBW vs 42.0dBW nominal) combined "
+                    "with antenna gain loss (34.1dBi vs 36.0dBi). EIRP drop indicates transmitter power amplifier "
+                    "(SSPA) degradation or waveguide loss. Antenna gain loss suggests feed horn misalignment or "
+                    "reflector surface distortion. Check atmospheric loss — 0.8dB vs 0.5dB nominal may indicate "
+                    "rain fade on the TDRSS link. Verify S-band transponder AGC levels and lock indicator. "
+                    "Remediation: increase transmit power via COMM_TX_POWER S-BAND +4dB, switch to backup "
+                    "antenna feed if available (COMM_FEED_SELECT S-BAND BACKUP). If rain fade suspected, "
+                    "request TDRSS handover to alternate ground station with clearer weather."
+                ),
+                "remediation_action": "reset_comms_link",
                 "error_message": "[COMM] COMM-SIGNAL-DEGRAD: link=S-band eb_no={snr_db}dB threshold={min_snr_db}dB channel={rf_channel}",
                 "stack_trace": (
                     "== LINK BUDGET ANALYSIS == S-BAND DOWNLINK ==\n"
@@ -305,6 +380,17 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["comms-array", "sensor-validator"],
                 "cascade_services": ["telemetry-relay", "mission-control"],
                 "description": "X-band data link experiencing excessive packet loss",
+                "investigation_notes": (
+                    "Root cause: high bit error rate (BER 1.2e-04) causing FEC decoder failures — 847 frames "
+                    "uncorrectable out of 2341 correction attempts. This BER level indicates either modulator "
+                    "output power degradation, X-band antenna misalignment, or intermodulation interference from "
+                    "adjacent RF systems. Check modulator constellation diagram for excessive phase noise. "
+                    "Verify X-band antenna boresight alignment and servo tracking loop bandwidth. "
+                    "Remediation: switch to backup X-band link (COMM_LINK_SELECT XB-SECONDARY), increase FEC "
+                    "coding rate from 7/8 to 3/4 via COMM_FEC_RATE X-BAND 3/4 (trades bandwidth for robustness). "
+                    "If antenna misalignment, run COMM_ANTENNA_CAL X-BAND to recalibrate servo offsets."
+                ),
+                "remediation_action": "reset_comms_link",
                 "error_message": "[COMM] COMM-PACKET-LOSS: link={link_id} loss_rate={loss_pct}% threshold={threshold_pct}% frames_dropped=847",
                 "stack_trace": (
                     "== LINK BUDGET ANALYSIS == X-BAND DATA LINK ==\n"
@@ -328,6 +414,18 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["comms-array", "sensor-validator"],
                 "cascade_services": ["mission-control"],
                 "description": "UHF antenna gimbal pointing error exceeds tolerance",
+                "investigation_notes": (
+                    "Root cause: gimbal servo controller failing to track TDRSS-W satellite — resolver feedback "
+                    "indicates mechanical binding or servo amplifier saturation. Pointing errors in both azimuth "
+                    "and elevation suggest the tracking algorithm lost lock, not a single-axis mechanical fault. "
+                    "Check gimbal motor current (nominal 2.1A, >3.5A indicates binding). Verify resolver "
+                    "calibration date — resolvers drift after thermal cycling. Inspect gimbal cable wrap for "
+                    "interference at azimuth limits. "
+                    "Remediation: reset gimbal controller (COMM_GIMBAL_RESET UHF-PRIMARY), run resolver "
+                    "calibration (COMM_RESOLVER_CAL UHF), then command reacquisition of TDRSS-W target "
+                    "(COMM_TRACK TDRSS-W AUTO). If binding persists, switch to UHF-SECONDARY gimbal."
+                ),
+                "remediation_action": "reconfigure_antenna",
                 "error_message": "[COMM] COMM-ANTENNA-POINTING: az_error={az_error}deg el_error={el_error}deg gimbal=UHF-PRIMARY lock=LOST",
                 "stack_trace": (
                     "== ANTENNA STATUS DUMP == UHF GIMBAL CONTROLLER ==\n"
@@ -352,6 +450,18 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["payload-monitor", "sensor-validator"],
                 "cascade_services": ["mission-control"],
                 "description": "Payload bay temperature outside safe operating range",
+                "investigation_notes": (
+                    "Root cause: coolant loop flow restriction or heater control circuit stuck-on condition. "
+                    "Coolant flow at 2.4L/min is below nominal 3.2L/min — check pump outlet pressure and "
+                    "look for air bubbles in the coolant loop (cavitation from improper ground fill). Verify "
+                    "MLI (multi-layer insulation) blanket integrity — a torn or displaced blanket on the sun-facing "
+                    "side causes rapid thermal excursion. Cross-reference with payload bay zones B/C/D — if only "
+                    "one zone affected, suspect local heater controller failure rather than loop-wide issue. "
+                    "Remediation: increase coolant pump speed (PLD_COOLANT_FLOW 4.0), disable zone heater if "
+                    "stuck-on (PLD_HEATER zone OFF), and monitor temperature convergence over 5-minute window. "
+                    "If MLI damage confirmed, notify payload integration team for EVA inspection."
+                ),
+                "remediation_action": "reset_payload_thermal",
                 "error_message": "[PLD] PLD-THERMAL-EXCURSION: zone={zone} temp={temp}C safe_max={safe_max}C delta=+{deviation}C",
                 "stack_trace": (
                     "== PAYLOAD CONTROLLER STATUS == THERMAL MANAGEMENT ==\n"
@@ -377,6 +487,18 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["payload-monitor", "sensor-validator"],
                 "cascade_services": ["mission-control", "range-safety"],
                 "description": "Payload vibration levels exceed structural safety margins",
+                "investigation_notes": (
+                    "Root cause: resonance coupling between the launch vehicle structure and payload isolation "
+                    "mounts at the observed frequency. Spectrum peaks at the primary frequency with harmonics at "
+                    "88.4Hz and 142.7Hz suggest a structural mode, not random vibration. Check isolation mount "
+                    "damper pressure (nominal 48.2PSI) — low pressure indicates a damper gas leak allowing "
+                    "resonance transmission. Verify no loose payload adapter bolts (torque spec 45 ft-lb). "
+                    "Remediation: activate vibration suppression mode (PLD_VIBRATION_DAMP ACTIVE), increase "
+                    "damper pressure via PLD_DAMPER_PRESS +10PSI. If structural resonance confirmed, assess "
+                    "whether launch loads will excite this mode — may require launch hold for structural review. "
+                    "Log the vibration spectrum for post-flight coupled loads analysis."
+                ),
+                "remediation_action": "reset_payload_thermal",
                 "error_message": "[PLD] PLD-VIBRATION-LIMIT: axis={axis} amplitude={amplitude}g frequency={frequency}Hz limit={limit}g",
                 "stack_trace": (
                     "== VIBRATION SPECTRUM DATA == PAYLOAD ACCELEROMETER ==\n"
@@ -402,6 +524,18 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["telemetry-relay", "sensor-validator"],
                 "cascade_services": ["mission-control", "comms-array"],
                 "description": "Cross-cloud telemetry relay latency exceeds acceptable bounds",
+                "investigation_notes": (
+                    "Root cause: relay buffer saturation at 87% utilization causing queuing delay, compounded by "
+                    "342 retransmits indicating packet loss on the inter-cloud link. High buffer utilization "
+                    "points to a congestion event — either a telemetry data burst from upstream sensors or a "
+                    "bandwidth reduction on the cross-cloud peering link. Check if the affected route has a "
+                    "degraded BGP path (longer AS path) or if cloud provider maintenance reduced link capacity. "
+                    "42ms jitter on the nominal routes confirms the issue is isolated to the affected hop. "
+                    "Remediation: failover to backup route (RLY_ROUTE_FAILOVER {source}->{dest} BACKUP), flush "
+                    "relay buffers (RLY_BUFFER_FLUSH), and enable QoS priority tagging for telemetry frames "
+                    "(RLY_QOS TELEMETRY HIGH). Monitor latency convergence below 200ms threshold."
+                ),
+                "remediation_action": "reset_relay_link",
                 "error_message": "[RLY] RLY-LATENCY-CRITICAL: hop={source_cloud}->{dest_cloud} latency={latency_ms}ms threshold={threshold_ms_relay}ms",
                 "stack_trace": (
                     "== RELAY DIAGNOSTIC REPORT == CROSS-CLOUD ROUTER ==\n"
@@ -426,6 +560,18 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["telemetry-relay", "sensor-validator"],
                 "cascade_services": ["mission-control"],
                 "description": "Telemetry packets failing integrity checks during relay",
+                "investigation_notes": (
+                    "Root cause: burst error pattern on CRC32-C failures indicates physical layer issue — likely "
+                    "NIC firmware bug, faulty SFP transceiver, or fiber micro-bend causing intermittent bit errors. "
+                    "Burst errors (vs random) rule out EMI and point to a specific link segment. Check NIC "
+                    "firmware version against known-good baseline. Inspect SFP optical power levels (TX and RX) "
+                    "for the affected route — RX power below -18dBm indicates a dirty connector or damaged fiber. "
+                    "Verify no recent rack maintenance that could have disturbed fiber runs. "
+                    "Remediation: replace suspect SFP transceiver on the affected route, clean fiber connectors "
+                    "with IPA wipes. If NIC firmware is outdated, schedule firmware update (NIC_FW_UPDATE {route}). "
+                    "Enable relay packet retransmission (RLY_RETRANSMIT ENABLE) as interim mitigation."
+                ),
+                "remediation_action": "reset_relay_link",
                 "error_message": "[RLY] RLY-PACKET-CORRUPT: route={route_id} corrupted={corrupted_count}/{total_count} crc_fail_rate={corrupted_count}pkt",
                 "stack_trace": (
                     "== RELAY DIAGNOSTIC REPORT == INTEGRITY CHECKER ==\n"
@@ -450,6 +596,18 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["ground-systems", "sensor-validator"],
                 "cascade_services": ["mission-control", "fuel-system"],
                 "description": "Launch pad power bus voltage irregularity detected",
+                "investigation_notes": (
+                    "Root cause: transformer tap setting drift or load imbalance on the affected power bus. "
+                    "Voltage deviation >8% from 120V nominal can cause sensitive avionics to trip undervoltage "
+                    "lockout. Check breaker panel for tripped breakers or loose connections — thermal imaging "
+                    "recommended on the distribution panel. Verify UPS is online (not on bypass) and generator "
+                    "auto-transfer switch is in AUTO mode. Compare bus current draw with other buses — 42.3A vs "
+                    "38.7A/41.1A on B/C suggests possible ground fault or excessive load on bus A. "
+                    "Remediation: adjust transformer tap setting (GND_TAP_SELECT {bus} +2), reset tripped "
+                    "breakers after verifying no short circuit. If persistent, switch critical loads to backup "
+                    "bus (GND_BUS_TRANSFER {bus} BACKUP) and dispatch electrical technician to the pad."
+                ),
+                "remediation_action": "reset_ground_power",
                 "error_message": "[GND] GND-POWER-BUS-FAULT: bus={bus_id} voltage={voltage}V nominal={nominal_v}V deviation={deviation_pct}%",
                 "stack_trace": (
                     "== GROUND SYSTEM DIAGNOSTIC == POWER DISTRIBUTION ==\n"
@@ -474,6 +632,19 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["ground-systems", "sensor-validator"],
                 "cascade_services": ["mission-control", "range-safety"],
                 "description": "Weather monitoring station reporting data gaps",
+                "investigation_notes": (
+                    "Root cause: RS-422 serial communication link timeout between the weather station and ground "
+                    "data system. Gap >15s violates launch commit criteria (LCC) for weather data continuity. "
+                    "Check RS-422 cable run for damage (common failure: cable crushed by pad equipment). Verify "
+                    "station processor is running (LED status panel on station enclosure). If station is solar-powered, "
+                    "check battery voltage — overcast conditions can deplete backup batteries. Compare with "
+                    "other stations (WX-SOUTH, WX-EAST, WX-WEST) to rule out ground data system receiver failure. "
+                    "Remediation: dispatch field technician to the affected station for physical inspection. "
+                    "Restart station processor via remote power cycle (GND_WX_RESET {station}). If RS-422 link "
+                    "is down, switch to backup Ethernet path (GND_WX_LINK {station} ETH). Weather LCC waiver "
+                    "requires Range Safety Officer approval if gap exceeds 60s."
+                ),
+                "remediation_action": "reset_ground_systems",
                 "error_message": "[GND] GND-WEATHER-GAP: station={station_id} gap={gap_seconds}s max_allowed={max_gap}s link=TIMEOUT",
                 "stack_trace": (
                     "== GROUND SYSTEM DIAGNOSTIC == WEATHER NETWORK ==\n"
@@ -499,6 +670,19 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["ground-systems", "sensor-validator"],
                 "cascade_services": ["mission-control"],
                 "description": "Launch pad hydraulic system pressure dropping below minimum",
+                "investigation_notes": (
+                    "Root cause: hydraulic pump wear or external leak causing system pressure to drop below "
+                    "2800PSI minimum. Reservoir level at 78% (nominal >90%) confirms fluid loss. Check filter "
+                    "differential pressure (12PSI is borderline — >15PSI indicates clogged filter starving the pump). "
+                    "Fluid temperature 42.1C is within limits but elevated — could indicate pump working harder "
+                    "to compensate for internal leakage. Inspect hydraulic lines to the holddown clamps and "
+                    "umbilical retract mechanisms for visible leaks. "
+                    "Remediation: switch to backup hydraulic system (GND_HYD_SELECT HYD-B), isolate the affected "
+                    "system (GND_HYD_ISOLATE {system}). Top off reservoir and replace filter element. If pump "
+                    "wear suspected, check pump discharge pressure vs RPM curve. Pad operations cannot proceed "
+                    "with hydraulic pressure below 2800PSI — holddown clamp release requires 3000PSI minimum."
+                ),
+                "remediation_action": "reset_ground_systems",
                 "error_message": "[GND] GND-HYDRAULIC-PRESS: system={system_id} pressure={pressure}PSI min_required={min_pressure}PSI status=LOW",
                 "stack_trace": (
                     "== GROUND SYSTEM DIAGNOSTIC == HYDRAULIC SYSTEM ==\n"
@@ -522,6 +706,19 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["sensor-validator"],
                 "cascade_services": ["mission-control", "telemetry-relay"],
                 "description": "Sensor validation pipeline stalled, readings not being validated",
+                "investigation_notes": (
+                    "Root cause: JVM garbage collection pressure causing stop-the-world pauses that stall the "
+                    "validation pipeline. Heap usage at 89% with GC pause of 120ms confirms the V&V processor "
+                    "is thrashing between GC cycles. All 8 worker threads are busy but throughput has collapsed "
+                    "because each thread blocks during GC pauses. Queue depth climbing rapidly indicates ingest "
+                    "rate exceeds processing capacity during GC storms. Check for memory leaks in the calibration "
+                    "correlation stage — retained object count should be <500K per checkpoint. "
+                    "Remediation: trigger manual GC compaction (VV_GC_COMPACT), then increase JVM heap size "
+                    "(VV_HEAP_RESIZE 12G) to reduce GC frequency. If queue depth exceeds 5000, enable upstream "
+                    "backpressure (VV_BACKPRESSURE ENABLE) to prevent data loss. For long-term fix, migrate to "
+                    "G1GC with -XX:MaxGCPauseMillis=20 to cap pause times."
+                ),
+                "remediation_action": "reset_validation_pipeline",
                 "error_message": "[VV] VV-PIPELINE-HALT: stage=validation queue_depth={queue_depth} rate={rate}/s threshold={min_rate}/s",
                 "stack_trace": (
                     "== VALIDATION PIPELINE STATUS == V&V PROCESSOR ==\n"
@@ -547,6 +744,19 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["sensor-validator"],
                 "cascade_services": ["mission-control", "fuel-system", "navigation"],
                 "description": "Sensor calibration epoch does not match expected reference",
+                "investigation_notes": (
+                    "Root cause: clock synchronization failure between the sensor's onboard time reference and "
+                    "the ground NTP stratum-1 server. The sensor's calibration table was generated at a different "
+                    "epoch than the current mission reference time, causing all calibrated readings to apply stale "
+                    "correction coefficients. GPS_UTC reference clock shows LOCKED but the sensor's local RTC "
+                    "may have drifted during a power cycle or brown-out event. Delta between actual and expected "
+                    "epochs >3600s indicates the sensor missed at least one calibration upload cycle. "
+                    "Remediation: force NTP resynchronization on the affected sensor (VV_NTP_SYNC {sensor_id}), "
+                    "then reload the current calibration epoch table (VV_EPOCH_RELOAD {sensor_id} FROM_REFERENCE). "
+                    "Verify the sensor's RTC battery voltage (>2.8V required). After resync, confirm epoch delta "
+                    "is <1s and downstream calibrated readings match cross-check sensors."
+                ),
+                "remediation_action": "resync_calibration_epoch",
                 "error_message": "[VV] VV-EPOCH-DRIFT: sensor={sensor_id} actual_epoch={actual_epoch} expected_epoch={expected_epoch} drift=CRITICAL",
                 "stack_trace": (
                     "== VALIDATION PIPELINE STATUS == EPOCH CHECKER ==\n"
@@ -571,6 +781,19 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["range-safety", "sensor-validator"],
                 "cascade_services": ["mission-control"],
                 "description": "Flight termination system self-check returning anomalous results",
+                "investigation_notes": (
+                    "Root cause: FTS self-test failure code (non-zero) indicates a fault in the command decoder, "
+                    "safe/arm logic, or destruct initiator continuity circuit. Unit is in SAFED state with both "
+                    "inhibits ON — no destruct risk, but a failed FTS is a mandatory launch hold per Range Safety "
+                    "requirements. Check command uplink integrity (AES-256 encrypted link must show LOCKED decoder "
+                    "status). Battery at 98.2% rules out power issues. Error code mapping: 0x01-0x0F = decoder, "
+                    "0x10-0x1F = safe/arm relay, 0x20-0xFF = initiator circuit. "
+                    "Remediation: power-cycle the FTS unit (RSO_FTS_POWER {unit} CYCLE), wait 30s for POST "
+                    "completion, then re-run self-test (RSO_FTS_SELFTEST {unit}). If error persists, request "
+                    "Range Safety Officer approval for FTS unit swap — requires pad access and minimum 2-hour "
+                    "recertification window. FTS-B can serve as backup if FTS-A is non-recoverable."
+                ),
+                "remediation_action": "reset_safety_system",
                 "error_message": "[RSO] RSO-FTS-CHECK-FAIL: unit={unit_id} self_test=FAIL code={error_code} arm_state=SAFED",
                 "stack_trace": (
                     "== RANGE SAFETY STATUS == FLIGHT TERMINATION SYSTEM ==\n"
@@ -595,6 +818,19 @@ class SpaceScenario(BaseScenario):
                 "affected_services": ["range-safety", "sensor-validator"],
                 "cascade_services": ["mission-control", "navigation"],
                 "description": "Range safety radar losing vehicle track",
+                "investigation_notes": (
+                    "Root cause: tracking radar lost skin-track on the vehicle — track fusion is in COAST mode "
+                    "with 72% prediction confidence, meaning the system is dead-reckoning based on last known "
+                    "state. RCS (radar cross-section) at 12.4 dBsm is adequate, so loss is likely from antenna "
+                    "servo tracking loop dropout, RF interference in the radar band, or physical obstruction "
+                    "in the radar line-of-sight. Check for construction cranes, aircraft, or weather in the "
+                    "radar corridor. Other radars (RDR-2, RDR-3) still tracking confirms single-radar fault. "
+                    "Remediation: command radar reacquisition (RSO_RADAR_REACQ {radar} TARGET VEHICLE), check "
+                    "antenna servo error logs for tracking loop faults (RSO_RADAR_SERVO_STATUS {radar}). If "
+                    "RF interference suspected, run spectrum analyzer sweep (RSO_SPECTRUM_SCAN {radar} BAND). "
+                    "Range Safety requires 2-of-3 radars tracking for launch commit — verify RDR-2/RDR-3 health."
+                ),
+                "remediation_action": "reset_safety_system",
                 "error_message": "[RSO] RSO-TRACKING-LOSS: radar={radar_id} gap={gap_ms}ms max_allowed={max_gap_ms}ms track_state=COAST",
                 "stack_trace": (
                     "== RANGE SAFETY STATUS == TRACKING RADAR NETWORK ==\n"
@@ -923,6 +1159,206 @@ class SpaceScenario(BaseScenario):
             TelemetryRelayService,
             RangeSafetyService,
         ]
+
+    # ── Trace Attributes & RCA ───────────────────────────────────────
+
+    def get_trace_attributes(self, service_name: str, rng) -> dict:
+        met_s = int(time.time()) % 86400
+        base = {
+            "mission.phase": rng.choice(["pre-launch", "countdown", "ascent", "orbital-insertion"]),
+            "mission.elapsed_time_s": met_s,
+        }
+        svc_attrs = {
+            "fuel-system": {
+                "propulsion.engine_id": rng.choice(["E1-MAIN", "E2-MAIN", "E3-VERNIER"]),
+                "propulsion.chamber_pressure_psi": round(rng.uniform(2400, 2650), 1),
+            },
+            "navigation": {
+                "gnc.nav_mode": rng.choice(["GPS_PRIMARY", "IMU_PRIMARY", "STAR_TRACKER", "BLENDED"]),
+                "orbit.altitude_km": round(rng.uniform(180, 420), 1),
+            },
+            "comms-array": {
+                "comms.link_type": rng.choice(["S-BAND", "X-BAND", "UHF"]),
+                "comms.signal_margin_db": round(rng.uniform(2.0, 12.0), 1),
+            },
+            "mission-control": {
+                "mcc.operator_console": rng.choice(["FLIGHT", "CAPCOM", "GNC", "PROP", "EECOM"]),
+                "mcc.telemetry_rate_hz": rng.choice([1, 5, 10, 25]),
+            },
+            "ground-systems": {
+                "ground.pad_id": rng.choice(["LC-39A", "LC-39B", "SLC-40"]),
+                "ground.weather_go": rng.choice([True, True, True, False]),
+            },
+            "payload-monitor": {
+                "payload.bay_temp_c": round(rng.uniform(18.0, 28.0), 1),
+                "payload.vibration_grms": round(rng.uniform(0.1, 1.2), 2),
+            },
+            "sensor-validator": {
+                "validation.pipeline_stage": rng.choice(["ingest", "calibration", "correlation", "output"]),
+                "validation.queue_depth": rng.randint(0, 200),
+            },
+            "telemetry-relay": {
+                "relay.hop_count": rng.randint(1, 4),
+                "relay.buffer_pct": round(rng.uniform(10.0, 85.0), 1),
+            },
+            "range-safety": {
+                "safety.fts_arm_state": rng.choice(["SAFED", "SAFED", "SAFED", "ARMED"]),
+                "safety.tracking_radars_active": rng.randint(2, 3),
+            },
+        }
+        base.update(svc_attrs.get(service_name, {}))
+        return base
+
+    def get_rca_clues(self, channel: int, service_name: str, rng) -> dict:
+        clues = {
+            1: {  # Thermal Calibration Drift
+                "fuel-system": {"thermal.sensor_zone": "engine_bay_sector_7", "thermal.calibration_epoch": "stale"},
+                "sensor-validator": {"validation.drift_detected": True, "validation.sensor_id": "TC-47"},
+                "mission-control": {"upstream.degraded_subsystem": "propulsion", "telemetry.quality": "degraded"},
+                "range-safety": {"safety.propulsion_status": "degraded"},
+            },
+            2: {  # Fuel Pressure Anomaly
+                "fuel-system": {"propulsion.regulator_mode": "REG-A-PRIMARY", "propulsion.he_supply_psi": round(rng.uniform(2700, 2840), 0)},
+                "sensor-validator": {"validation.pressure_outlier": True, "validation.tank_id": rng.choice(["LOX-1", "RP1-1"])},
+                "mission-control": {"upstream.degraded_subsystem": "propulsion", "telemetry.alert_class": "pressure"},
+                "range-safety": {"safety.propulsion_status": "anomalous"},
+            },
+            3: {  # Oxidizer Flow Rate Deviation
+                "fuel-system": {"propulsion.turbopump_rpm": rng.randint(30800, 31200), "propulsion.mov_trim_pct": round(rng.uniform(-5, 5), 1)},
+                "sensor-validator": {"validation.flow_delta_pct": round(rng.uniform(3.5, 8.0), 1), "validation.sensor_type": "flow_rate"},
+                "mission-control": {"upstream.degraded_subsystem": "propulsion"},
+            },
+            4: {  # GPS Multipath Interference
+                "navigation": {"gnc.sv_masked_count": rng.randint(2, 5), "gnc.pdop": round(rng.uniform(6.5, 12.0), 1)},
+                "sensor-validator": {"validation.gps_solution_quality": "degraded", "validation.multipath_svs": rng.choice(["G04,G07,G15", "G07,G15"])},
+                "mission-control": {"upstream.degraded_subsystem": "guidance", "telemetry.nav_accuracy": "reduced"},
+                "range-safety": {"safety.nav_solution_status": "degraded"},
+            },
+            5: {  # IMU Synchronization Loss
+                "navigation": {"gnc.pps_source": rng.choice(["GPS_1PPS_A", "GPS_1PPS_B"]), "gnc.ocxo_temp_c": round(rng.uniform(41.0, 43.5), 1)},
+                "sensor-validator": {"validation.imu_drift_axis": rng.choice(["X", "Y", "Z"]), "validation.clock_delta_ms": round(rng.uniform(3.5, 15.0), 1)},
+                "mission-control": {"upstream.degraded_subsystem": "guidance", "telemetry.imu_status": "sync_loss"},
+                "range-safety": {"safety.nav_solution_status": "degraded"},
+            },
+            6: {  # Star Tracker Alignment Fault
+                "navigation": {"gnc.st_catalog_matches": rng.randint(5, 11), "gnc.ccd_temp_c": round(rng.uniform(-30, -25), 1)},
+                "sensor-validator": {"validation.boresight_error_arcsec": round(rng.uniform(8.0, 40.0), 1), "validation.optics_contamination": rng.choice([True, False])},
+                "mission-control": {"upstream.degraded_subsystem": "guidance"},
+            },
+            7: {  # S-Band Signal Degradation
+                "comms-array": {"comms.eirp_dbw": round(rng.uniform(35, 39), 1), "comms.antenna_gain_dbi": round(rng.uniform(32, 35), 1)},
+                "sensor-validator": {"validation.link_margin_db": round(rng.uniform(-3, 0), 1), "validation.rain_fade_detected": rng.choice([True, False])},
+                "mission-control": {"upstream.degraded_subsystem": "communications", "telemetry.comm_status": "degraded"},
+                "telemetry-relay": {"relay.s_band_quality": "poor"},
+            },
+            8: {  # X-Band Packet Loss
+                "comms-array": {"comms.ber": rng.choice(["1.2e-04", "5.8e-05", "3.1e-04"]), "comms.fec_failure_count": rng.randint(500, 1200)},
+                "sensor-validator": {"validation.packet_integrity": "degraded", "validation.link_affected": rng.choice(["XB-PRIMARY", "XB-SECONDARY"])},
+                "telemetry-relay": {"relay.x_band_retransmits": rng.randint(100, 500)},
+                "mission-control": {"upstream.degraded_subsystem": "communications"},
+            },
+            9: {  # UHF Antenna Pointing Error
+                "comms-array": {"comms.gimbal_motor_current_a": round(rng.uniform(2.5, 4.0), 1), "comms.tracking_target": "TDRSS-W"},
+                "sensor-validator": {"validation.pointing_error_deg": round(rng.uniform(1.0, 5.0), 2), "validation.servo_status": "fault"},
+                "mission-control": {"upstream.degraded_subsystem": "communications"},
+            },
+            10: {  # Payload Thermal Excursion
+                "payload-monitor": {"payload.coolant_flow_lpm": round(rng.uniform(1.8, 2.6), 1), "payload.heater_state": rng.choice(["OFF", "STUCK_ON"])},
+                "sensor-validator": {"validation.thermal_zone_affected": rng.choice(["A", "B"]), "validation.mli_status": rng.choice(["INTACT", "SUSPECT"])},
+                "mission-control": {"upstream.degraded_subsystem": "payload"},
+            },
+            11: {  # Payload Vibration Anomaly
+                "payload-monitor": {"payload.damper_pressure_psi": round(rng.uniform(38, 48), 1), "payload.resonance_freq_hz": round(rng.uniform(20, 80), 1)},
+                "sensor-validator": {"validation.vibration_exceeded": True, "validation.isolation_mount_status": rng.choice(["ACTIVE", "DEGRADED"])},
+                "mission-control": {"upstream.degraded_subsystem": "payload"},
+                "range-safety": {"safety.structural_status": "monitor"},
+            },
+            12: {  # Cross-Cloud Relay Latency
+                "telemetry-relay": {"relay.buffer_utilization_pct": round(rng.uniform(75, 95), 1), "relay.retransmit_count": rng.randint(200, 600)},
+                "sensor-validator": {"validation.relay_health": "degraded", "validation.affected_route": rng.choice(["aws->gcp", "gcp->azure", "aws->azure"])},
+                "mission-control": {"upstream.degraded_subsystem": "relay", "telemetry.data_freshness": "stale"},
+                "comms-array": {"comms.upstream_relay_status": "congested"},
+            },
+            13: {  # Relay Packet Corruption
+                "telemetry-relay": {"relay.crc_fail_pattern": "burst", "relay.sfp_rx_power_dbm": round(rng.uniform(-20, -16), 1)},
+                "sensor-validator": {"validation.data_integrity": "compromised", "validation.corrupt_route": rng.choice(["AWS-GCP-01", "GCP-AZ-01"])},
+                "mission-control": {"upstream.degraded_subsystem": "relay"},
+            },
+            14: {  # Ground Power Bus Fault
+                "ground-systems": {"ground.bus_current_a": round(rng.uniform(38, 48), 1), "ground.ups_mode": rng.choice(["ONLINE", "BYPASS"])},
+                "sensor-validator": {"validation.power_quality": "degraded", "validation.affected_bus": rng.choice(["PWR-A", "PWR-B"])},
+                "mission-control": {"upstream.degraded_subsystem": "ground", "telemetry.pad_status": "caution"},
+                "fuel-system": {"propulsion.ground_power_status": "unstable"},
+            },
+            15: {  # Weather Station Data Gap
+                "ground-systems": {"ground.wx_link_type": "RS-422", "ground.station_battery_pct": round(rng.uniform(15, 45), 0)},
+                "sensor-validator": {"validation.weather_data_gap_s": rng.randint(20, 120), "validation.station_affected": rng.choice(["WX-NORTH", "WX-SOUTH"])},
+                "mission-control": {"upstream.degraded_subsystem": "ground", "telemetry.lcc_weather": "violated"},
+                "range-safety": {"safety.weather_lcc_status": "NO-GO"},
+            },
+            16: {  # Pad Hydraulic Pressure Loss
+                "ground-systems": {"ground.hyd_reservoir_pct": round(rng.uniform(65, 82), 0), "ground.filter_dp_psi": round(rng.uniform(10, 18), 1)},
+                "sensor-validator": {"validation.hydraulic_pressure_status": "low", "validation.system_affected": rng.choice(["HYD-A", "HYD-B"])},
+                "mission-control": {"upstream.degraded_subsystem": "ground"},
+            },
+            17: {  # Sensor Validation Pipeline Stall
+                "sensor-validator": {"validation.heap_usage_pct": round(rng.uniform(85, 97), 0), "validation.gc_pause_ms": rng.randint(80, 250)},
+                "mission-control": {"upstream.degraded_subsystem": "validation", "telemetry.validation_status": "stalled"},
+                "telemetry-relay": {"relay.upstream_backpressure": True},
+            },
+            18: {  # Calibration Epoch Mismatch
+                "sensor-validator": {"validation.epoch_delta_s": rng.randint(3600, 86400), "validation.rtc_battery_v": round(rng.uniform(2.2, 2.9), 1)},
+                "mission-control": {"upstream.degraded_subsystem": "validation", "telemetry.calibration_status": "stale"},
+                "fuel-system": {"propulsion.calibration_confidence": "low"},
+                "navigation": {"gnc.calibration_confidence": "low"},
+            },
+            19: {  # Flight Termination System Check Failure
+                "range-safety": {"safety.fts_error_code": f"0x{rng.randint(1, 255):02X}", "safety.fts_battery_pct": round(rng.uniform(95, 99), 1)},
+                "sensor-validator": {"validation.fts_self_test": "FAIL", "validation.decoder_status": rng.choice(["LOCKED", "DEGRADED"])},
+                "mission-control": {"upstream.degraded_subsystem": "safety", "telemetry.launch_hold": "FTS"},
+            },
+            20: {  # Range Safety Tracking Loss
+                "range-safety": {"safety.fusion_state": "COAST", "safety.predict_confidence_pct": round(rng.uniform(55, 80), 0)},
+                "sensor-validator": {"validation.radar_track_status": "LOST", "validation.affected_radar": rng.choice(["RDR-1", "RDR-2", "RDR-3"])},
+                "mission-control": {"upstream.degraded_subsystem": "safety", "telemetry.tracking_status": "degraded"},
+                "navigation": {"gnc.external_tracking": "unavailable"},
+            },
+        }
+        channel_clues = clues.get(channel, {})
+        return channel_clues.get(service_name, {})
+
+    def get_correlation_attribute(self, channel: int, is_error: bool, rng) -> dict:
+        correlation_attrs = {
+            1: ("deployment.config_version", "v2.3.1-canary"),
+            2: ("infra.firmware_rev", "fw-4.2.0-rc1"),
+            3: ("runtime.gc_policy", "aggressive-g1"),
+            4: ("network.dns_resolver", "coredns-v1.11.4-patch2"),
+            5: ("infra.ntp_source", "gps-pps-backup"),
+            6: ("deployment.image_tag", "star-tracker-v3.1.0-beta"),
+            7: ("network.proxy_config", "envoy-v1.28-experimental"),
+            8: ("infra.nic_driver", "ena-2.12.3-unstable"),
+            9: ("deployment.servo_fw", "gimbal-ctrl-v2.0.1-rc3"),
+            10: ("runtime.jvm_flags", "-XX:+UseZGC -Xmx2g"),
+            11: ("infra.mount_revision", "iso-bracket-rev-C"),
+            12: ("network.bgp_as_path", "64512-64513-64515"),
+            13: ("infra.sfp_model", "FTRJ1319P1BTL-v2"),
+            14: ("infra.ups_firmware", "apc-smart-ups-v4.1.2"),
+            15: ("deployment.wx_station_fw", "davis-v3.2.1-patched"),
+            16: ("infra.hyd_pump_model", "parker-pvp48-rebuilt"),
+            17: ("runtime.heap_config", "jvm-12g-g1gc-experimental"),
+            18: ("infra.rtc_crystal", "txco-40mhz-batch-2024Q3"),
+            19: ("deployment.fts_firmware", "fts-controller-v5.2.0-rc1"),
+            20: ("infra.radar_firmware", "rdr-track-v8.1.3-beta"),
+        }
+        attr_key, attr_val = correlation_attrs.get(channel, ("deployment.config_version", "unknown"))
+        # 90% on errors, 5% on healthy
+        if is_error:
+            if rng.random() < 0.90:
+                return {attr_key: attr_val}
+        else:
+            if rng.random() < 0.05:
+                return {attr_key: attr_val}
+        return {}
 
     # ── Fault Parameters ──────────────────────────────────────────────
 

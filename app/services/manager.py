@@ -120,19 +120,22 @@ class ServiceManager:
                 "service_topology": scenario.service_topology,
                 "entry_endpoints": scenario.entry_endpoints,
                 "db_operations": scenario.db_operations,
+                "scenario": scenario,
             }
 
         # Trace generator needs chaos_controller and scenario_data
         trace_args = (self.otlp, self._stop_event, self.chaos_controller)
         trace_kwargs = {"scenario_data": scenario_data} if scenario_data else {}
 
-        # Host metrics generator needs scenario_data
+        # Host metrics generator needs chaos_controller and scenario_data
         host_args = (self.otlp, self._stop_event)
         host_kwargs = {"scenario_data": scenario_data} if scenario_data else {}
+        host_kwargs["chaos_controller"] = self.chaos_controller
 
-        # K8s metrics generator needs scenario_data
+        # K8s metrics generator needs chaos_controller and scenario_data
         k8s_args = (self.otlp, self._stop_event)
         k8s_kwargs = {"scenario_data": scenario_data} if scenario_data else {}
+        k8s_kwargs["chaos_controller"] = self.chaos_controller
 
         # Common args/kwargs for generators that accept scenario_data
         common_args = (self.otlp, self._stop_event)

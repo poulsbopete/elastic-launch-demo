@@ -235,6 +235,84 @@
         populateDropdown(data);
     }
 
+    // ── Infrastructure Spikes ─────────────────────────────────
+    let spikeDebounceTimer = null;
+
+    function initSpikes() {
+        // Load current spike state
+        fetch('/api/chaos/spikes' + qs)
+            .then(r => r.json())
+            .then(data => {
+                setSpikeSlider('spike-cpu', data.cpu_pct || 0, 'spike-cpu-value', formatPct);
+                setSpikeSlider('spike-memory', data.memory_pct || 0, 'spike-memory-value', formatPct);
+                setSpikeSlider('spike-oom', data.k8s_oom_intensity || 0, 'spike-oom-value', formatPct);
+                setSpikeSlider('spike-latency', (data.latency_multiplier || 1.0) * 10, 'spike-latency-value', formatMult);
+            })
+            .catch(() => { /* ignore */ });
+
+        // Wire up slider events
+        wireSlider('spike-cpu', 'spike-cpu-value', formatPct);
+        wireSlider('spike-memory', 'spike-memory-value', formatPct);
+        wireSlider('spike-oom', 'spike-oom-value', formatPct);
+        wireSlider('spike-latency', 'spike-latency-value', formatMult);
+    }
+
+    function formatPct(val) { return val > 0 ? val + '%' : 'OFF'; }
+    function formatMult(val) { return (val / 10).toFixed(1) + 'x'; }
+
+    function setSpikeSlider(sliderId, value, valueId, formatter) {
+        const slider = document.getElementById(sliderId);
+        const display = document.getElementById(valueId);
+        if (!slider || !display) return;
+        slider.value = value;
+        const formatted = formatter(parseFloat(value));
+        display.textContent = formatted;
+        const isActive = sliderId === 'spike-latency' ? parseFloat(value) > 10 : parseFloat(value) > 0;
+        display.classList.toggle('on', isActive);
+        slider.closest('.spike-control').classList.toggle('active', isActive);
+    }
+
+    function wireSlider(sliderId, valueId, formatter) {
+        const slider = document.getElementById(sliderId);
+        if (!slider) return;
+        slider.addEventListener('input', function () {
+            const val = parseFloat(this.value);
+            const display = document.getElementById(valueId);
+            display.textContent = formatter(val);
+            const isActive = sliderId === 'spike-latency' ? val > 10 : val > 0;
+            display.classList.toggle('on', isActive);
+            this.closest('.spike-control').classList.toggle('active', isActive);
+            debounceSendSpikes();
+        });
+    }
+
+    function debounceSendSpikes() {
+        clearTimeout(spikeDebounceTimer);
+        spikeDebounceTimer = setTimeout(sendSpikes, 300);
+    }
+
+    function sendSpikes() {
+        const cpu = parseFloat(document.getElementById('spike-cpu').value);
+        const mem = parseFloat(document.getElementById('spike-memory').value);
+        const oom = parseFloat(document.getElementById('spike-oom').value);
+        const lat = parseFloat(document.getElementById('spike-latency').value) / 10;
+
+        fetch('/api/chaos/spikes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                cpu_pct: cpu,
+                memory_pct: mem,
+                k8s_oom_intensity: oom,
+                latency_multiplier: lat,
+                deployment_id: deployId || undefined,
+            }),
+        })
+            .then(r => r.json())
+            .catch(e => console.error('Failed to update spikes:', e));
+    }
+
     // ── Start ─────────────────────────────────────────────────
     init();
+    initSpikes();
 })();

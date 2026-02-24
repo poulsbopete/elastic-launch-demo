@@ -93,7 +93,11 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
                     *, services: dict | None = None, namespace: str | None = None,
                     service_topology: dict | None = None,
                     entry_endpoints: dict | None = None,
-                    db_operations: dict | None = None) -> dict[str, list]:
+                    db_operations: dict | None = None,
+                    latency_multiplier: float = 1.0,
+                    scenario=None,
+                    active_channels: list[int] | None = None,
+                    channel_registry: dict | None = None) -> dict[str, list]:
     """Generate a single distributed trace across multiple services.
 
     Returns a dict mapping service_name -> list of spans for that service.
@@ -139,11 +143,44 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
         total_duration = rng.randint(200, 2000)
     else:
         total_duration = rng.randint(50, 500)
+    # Apply latency multiplier from infra spikes
+    total_duration = int(total_duration * latency_multiplier)
+
+    # Build per-service -> channel mapping for RCA clues
+    _svc_channels: dict[str, list[int]] = {}
+    if active_channels and channel_registry:
+        for ch_id in active_channels:
+            ch = channel_registry.get(ch_id, {})
+            for svc in ch.get("affected_services", []) + ch.get("cascade_services", []):
+                _svc_channels.setdefault(svc, []).append(ch_id)
 
     # Root SERVER span for the entry-point service
     root_span_id = _gen_span_id()
     root_status = STATUS_ERROR if (is_error_trace and error_service == entry_service) else STATUS_OK
     root_http_status = rng.choice([500, 502, 503]) if root_status == STATUS_ERROR else 200
+
+    # Helper: build extra scenario attrs for a span
+    def _extra_attrs(svc: str, is_err: bool) -> dict:
+        extra = {}
+        if scenario:
+            extra.update(scenario.get_trace_attributes(svc, rng))
+            if _svc_channels.get(svc):
+                for ch in _svc_channels[svc]:
+                    extra.update(scenario.get_rca_clues(ch, svc, rng))
+            if active_channels:
+                for ch in active_channels:
+                    extra.update(scenario.get_correlation_attribute(ch, is_err, rng))
+        return extra
+
+    root_attrs = {
+        "http.request.method": entry_method,
+        "url.path": entry_endpoint,
+        "http.response.status_code": root_http_status,
+        "server.address": f"{entry_service}-host",
+        "server.port": 8080,
+        "network.protocol.version": "1.1",
+    }
+    root_attrs.update(_extra_attrs(entry_service, root_status == STATUS_ERROR))
 
     root_span = client.build_span(
         name=f"{entry_method} {entry_endpoint}",
@@ -152,14 +189,7 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
         kind=SPAN_KIND_SERVER,
         duration_ms=total_duration,
         status_code=root_status,
-        attributes={
-            "http.request.method": entry_method,
-            "url.path": entry_endpoint,
-            "http.response.status_code": root_http_status,
-            "server.address": f"{entry_service}-host",
-            "server.port": 8080,
-            "network.protocol.version": "1.1",
-        },
+        attributes=root_attrs,
     )
     spans_by_service.setdefault(entry_service, []).append(root_span)
 
@@ -233,6 +263,14 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
             # SERVER span on the callee side
             server_span_id = _gen_span_id()
             server_duration = call_duration - rng.randint(1, max(1, call_duration // 5))
+            callee_attrs = {
+                "http.request.method": callee_method,
+                "url.path": callee_endpoint,
+                "http.response.status_code": call_http_status,
+                "server.address": f"{callee_service}-host",
+                "server.port": 8080,
+            }
+            callee_attrs.update(_extra_attrs(callee_service, is_this_error))
             server_span = client.build_span(
                 name=f"{callee_method} {callee_endpoint}",
                 trace_id=trace_id,
@@ -241,13 +279,7 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
                 kind=SPAN_KIND_SERVER,
                 duration_ms=max(1, server_duration),
                 status_code=call_status,
-                attributes={
-                    "http.request.method": callee_method,
-                    "url.path": callee_endpoint,
-                    "http.response.status_code": call_http_status,
-                    "server.address": f"{callee_service}-host",
-                    "server.port": 8080,
-                },
+                attributes=callee_attrs,
             )
             spans_by_service.setdefault(callee_service, []).append(server_span)
 
@@ -341,6 +373,7 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
     _all_topology = scenario_data["service_topology"] if scenario_data else SERVICE_TOPOLOGY
     _all_endpoints = scenario_data["entry_endpoints"] if scenario_data else ENTRY_ENDPOINTS
     _db_ops = scenario_data["db_operations"] if scenario_data else DB_OPERATIONS
+    _scenario = scenario_data.get("scenario") if scenario_data else None
 
     # Filter out services that don't generate traces (e.g. infrastructure/network devices)
     excluded = {name for name, cfg in _all_services.items() if cfg.get("generates_traces") is False}
@@ -363,11 +396,19 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
     while not stop_event.is_set():
         # Build set of services affected by active chaos channels
         chaos_affected: set[str] = set()
+        _active_channels: list[int] = []
         if chaos_controller:
-            for ch_id in chaos_controller.get_active_channels():
+            _active_channels = chaos_controller.get_active_channels()
+            for ch_id in _active_channels:
                 ch = _channel_registry.get(ch_id)
                 if ch:
                     chaos_affected.update(ch["affected_services"])
+
+        # Read latency multiplier from infra spikes
+        _latency_mult = 1.0
+        if chaos_controller:
+            _spikes = chaos_controller.get_infra_spikes()
+            _latency_mult = _spikes.get("latency_multiplier", 1.0)
 
         num_traces = rng.randint(2, 5)
 
@@ -378,6 +419,10 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
                 services=_services, namespace=_namespace,
                 service_topology=_topology, entry_endpoints=_endpoints,
                 db_operations=_db_ops,
+                latency_multiplier=_latency_mult,
+                scenario=_scenario,
+                active_channels=_active_channels or None,
+                channel_registry=_channel_registry,
             )
             for svc, spans in trace_spans.items():
                 batch_by_service.setdefault(svc, []).extend(spans)

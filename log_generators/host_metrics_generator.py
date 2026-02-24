@@ -359,16 +359,21 @@ def _build_gauge_metric(name: str, value, unit: str, attributes: dict | None = N
     }
 
 
-def _generate_host_metrics(state: HostMetricState, rng: random.Random) -> dict[str, list]:
+def _generate_host_metrics(state: HostMetricState, rng: random.Random,
+                           cpu_spike_pct: float = 0, memory_spike_pct: float = 0) -> dict[str, list]:
     """Generate all host metrics grouped by scraper scope name.
 
     Returns dict mapping scope_name -> list of metric dicts.
+    cpu_spike_pct/memory_spike_pct: 0-100 target utilization when spiked.
     """
     state.tick()
     metrics_by_scope: dict[str, list] = {}
 
     # ── Load metrics ──
-    load_1m = rng.uniform(0.5, 4.0)
+    if cpu_spike_pct > 0:
+        load_1m = rng.uniform(cpu_spike_pct / 20, cpu_spike_pct / 12)
+    else:
+        load_1m = rng.uniform(0.5, 4.0)
     load_5m = load_1m * rng.uniform(0.7, 1.1)
     load_15m = load_5m * rng.uniform(0.8, 1.05)
     metrics_by_scope[SCRAPERS["load"]] = [
@@ -388,16 +393,35 @@ def _generate_host_metrics(state: HostMetricState, rng: random.Random) -> dict[s
                 "system.cpu.time", val, "s",
                 attributes={"cpu": cpu_id, "state": state_name},
             ))
+            # Bias utilization toward spike target when active
+            if cpu_spike_pct > 0 and total > 0:
+                target = cpu_spike_pct / 100.0
+                if state_name == "user":
+                    util = target * rng.uniform(0.55, 0.65)
+                elif state_name == "system":
+                    util = target * rng.uniform(0.25, 0.35)
+                elif state_name == "idle":
+                    util = max(0.01, 1.0 - target) * rng.uniform(0.8, 1.2)
+                else:  # wait
+                    util = target * rng.uniform(0.02, 0.08)
+            else:
+                util = val / total if total > 0 else 0
             cpu_metrics.append(_build_gauge_metric(
-                "system.cpu.utilization", val / total if total > 0 else 0, "1",
+                "system.cpu.utilization", util, "1",
                 attributes={"cpu": cpu_id, "state": state_name},
             ))
     metrics_by_scope[SCRAPERS["cpu"]] = cpu_metrics
 
     # ── Memory metrics ──
-    mem_used_pct = rng.uniform(0.35, 0.85)
-    mem_cached_pct = rng.uniform(0.05, 0.20)
-    mem_buffered_pct = rng.uniform(0.01, 0.05)
+    if memory_spike_pct > 0:
+        mem_used_pct = (memory_spike_pct / 100.0) * rng.uniform(0.95, 1.05)
+        mem_used_pct = min(mem_used_pct, 0.97)
+        mem_cached_pct = rng.uniform(0.01, 0.03)
+        mem_buffered_pct = rng.uniform(0.005, 0.01)
+    else:
+        mem_used_pct = rng.uniform(0.35, 0.85)
+        mem_cached_pct = rng.uniform(0.05, 0.20)
+        mem_buffered_pct = rng.uniform(0.01, 0.05)
     mem_free_pct = 1.0 - mem_used_pct - mem_cached_pct - mem_buffered_pct
     if mem_free_pct < 0:
         mem_free_pct = 0.05
@@ -711,11 +735,23 @@ def _send_process_metrics(
 
 
 # ── Run loop (used by ServiceManager and standalone) ──────────────────────────
-def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None) -> None:
+def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None,
+        chaos_controller=None) -> None:
     """Run host metrics generator loop until stop_event is set."""
     rng = random.Random()
 
     hosts = scenario_data["hosts"] if scenario_data else HOSTS
+    # Build cloud_provider -> host_name mapping for targeted spikes
+    _host_cloud_map: dict[str, str] = {}
+    for h in hosts:
+        _host_cloud_map[h["host.name"]] = h.get("cloud.provider", "")
+    # Build service -> cloud_provider mapping from scenario_data
+    _service_cloud: dict[str, str] = {}
+    _channel_registry = {}
+    if scenario_data:
+        for svc_name, svc_cfg in scenario_data.get("services", {}).items():
+            _service_cloud[svc_name] = svc_cfg.get("cloud_provider", "")
+        _channel_registry = scenario_data.get("channel_registry", {})
 
     # Build resources and metric state for each host
     host_resources = []
@@ -743,11 +779,40 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
                 METRICS_INTERVAL, len(hosts), proc_count)
 
     while not stop_event.is_set():
+        # Determine per-host spike targets from chaos_controller
+        spikes = chaos_controller.get_infra_spikes() if chaos_controller else {}
+        cpu_pct = spikes.get("cpu_pct", 0)
+        mem_pct = spikes.get("memory_pct", 0)
+
+        # Build set of cloud providers with active faults (for targeting)
+        spiked_clouds: set[str] = set()
+        has_active_faults = False
+        if chaos_controller and (cpu_pct > 0 or mem_pct > 0):
+            active_channels = chaos_controller.get_active_channels()
+            if active_channels:
+                has_active_faults = True
+                for ch_id in active_channels:
+                    ch = _channel_registry.get(ch_id, {})
+                    for svc in ch.get("affected_services", []):
+                        cloud = _service_cloud.get(svc)
+                        if cloud:
+                            spiked_clouds.add(cloud)
+
         batch_metrics = 0
         for host_cfg, resource, state, proc_states in zip(
             hosts, host_resources, host_states, host_proc_states,
         ):
-            metrics_by_scope = _generate_host_metrics(state, rng)
+            host_name = host_cfg["host.name"]
+            host_cloud = _host_cloud_map.get(host_name, "")
+            # Spike this host if: sliders active AND (no faults → spike all, or this host's cloud is affected)
+            if (cpu_pct > 0 or mem_pct > 0) and (not has_active_faults or host_cloud in spiked_clouds):
+                host_cpu = cpu_pct
+                host_mem = mem_pct
+            else:
+                host_cpu = 0
+                host_mem = 0
+
+            metrics_by_scope = _generate_host_metrics(state, rng, cpu_spike_pct=host_cpu, memory_spike_pct=host_mem)
             sent = _send_metrics_with_scopes(client, resource, metrics_by_scope)
             batch_metrics += sent
             # Per-process metrics

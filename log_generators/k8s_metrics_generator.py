@@ -468,10 +468,89 @@ def _generate_k8s_warning_logs(client: OTLPClient, pod_data: dict, cluster: dict
 
 # ── Run loop ─────────────────────────────────────────────────────────────────
 
-def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None) -> None:
+def _generate_oom_killed_log(client: OTLPClient, svc: str, pod_data: dict, cluster: dict, rng: random.Random) -> None:
+    """Emit an OOMKilled event log for a targeted pod."""
+    p = pod_data["pods"][svc]
+    now_ns = _now_ns()
+    event_name = f"{p['pod_name']}.oomkill.{secrets.token_hex(4)}"
+    event_time_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    structured_body = {
+        "object.kind": "Event",
+        "object.type": "Warning",
+        "object.reason": "OOMKilling",
+        "object.note": f"Container {svc}-container in pod {p['pod_name']} was OOMKilled (memory limit exceeded)",
+        "object.regarding.kind": "Pod",
+        "object.regarding.name": p["pod_name"],
+        "object.regarding.namespace": NAMESPACE,
+        "object.metadata.name": event_name,
+        "object.metadata.namespace": NAMESPACE,
+        "object.metadata.creationTimestamp": event_time_iso,
+        "object.deprecatedSource.component": "kubelet",
+        "object.deprecatedSource.host": p["node_name"],
+        "type": "MODIFIED",
+    }
+
+    log_record = {
+        "timeUnixNano": now_ns,
+        "severityText": "Warning",
+        "severityNumber": 13,
+        "body": {
+            "kvlistValue": {
+                "values": _format_attributes(structured_body),
+            }
+        },
+        "attributes": [
+            {"key": "event.name", "value": {"stringValue": event_name}},
+            {"key": "event.domain", "value": {"stringValue": "k8s"}},
+            {"key": "k8s.event.type", "value": {"stringValue": "Warning"}},
+            {"key": "k8s.event.reason", "value": {"stringValue": "OOMKilling"}},
+            {"key": "k8s.event.start_time", "value": {"stringValue": event_time_iso}},
+            {"key": "k8s.object.kind", "value": {"stringValue": "Pod"}},
+            {"key": "k8s.object.name", "value": {"stringValue": p["pod_name"]}},
+            {"key": "k8s.event.object.kind", "value": {"stringValue": "Pod"}},
+            {"key": "k8s.event.object.name", "value": {"stringValue": p["pod_name"]}},
+            {"key": "k8s.event.object.namespace", "value": {"stringValue": NAMESPACE}},
+            {"key": "k8s.namespace.name", "value": {"stringValue": NAMESPACE}},
+        ],
+    }
+
+    resource_attrs = {
+        "k8s.cluster.name": cluster["name"],
+        "k8s.namespace.name": NAMESPACE,
+        "cloud.provider": cluster["provider"],
+        "cloud.platform": cluster["platform"],
+        "cloud.region": cluster["region"],
+        "data_stream.type": "logs",
+        "data_stream.dataset": "k8seventsreceiver",
+        "data_stream.namespace": "default",
+    }
+
+    payload = {
+        "resourceLogs": [{
+            "resource": {"attributes": _format_attributes(resource_attrs), "schemaUrl": SCHEMA_URL},
+            "scopeLogs": [{
+                "scope": {"name": K8S_OBJECTS_SCOPE, "version": SCOPE_VERSION},
+                "logRecords": [log_record],
+            }],
+        }]
+    }
+    client._send(f"{client.endpoint}/v1/logs", payload, "k8s-oomkill-events")
+
+
+def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None,
+        chaos_controller=None) -> None:
     """Run K8s metrics generator loop until stop_event is set."""
     rng = random.Random()
     clusters = scenario_data["k8s_clusters"] if scenario_data else CLUSTERS
+
+    # Build service -> cloud_provider mapping for targeted spikes
+    _service_cloud: dict[str, str] = {}
+    _channel_registry = {}
+    if scenario_data:
+        for svc_name, svc_cfg in scenario_data.get("services", {}).items():
+            _service_cloud[svc_name] = svc_cfg.get("cloud_provider", "")
+        _channel_registry = scenario_data.get("channel_registry", {})
 
     # Collect all service names across clusters for state tracking
     all_services = []
@@ -497,22 +576,68 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
         state.tick()
         resource_metrics = []
 
+        # Determine OOM spike targets from chaos_controller
+        spikes = chaos_controller.get_infra_spikes() if chaos_controller else {}
+        oom_intensity = spikes.get("k8s_oom_intensity", 0)
+
+        # Build set of spiked services (affected by active faults)
+        spiked_services: set[str] = set()
+        has_active_faults = False
+        if chaos_controller and oom_intensity > 0:
+            active_channels = chaos_controller.get_active_channels()
+            if active_channels:
+                has_active_faults = True
+                for ch_id in active_channels:
+                    ch = _channel_registry.get(ch_id, {})
+                    spiked_services.update(ch.get("affected_services", []))
+
         for cluster, pod_data in cluster_data:
             svcs = cluster["services"]
 
             # Pod-level metrics (one resource per service, kubeletstatsreceiver scope)
             for svc in svcs:
+                # Check if this service should be OOM-spiked
+                is_spiked = oom_intensity > 0 and (not has_active_faults or svc in spiked_services)
+
                 pod_res = _build_pod_resource(svc, pod_data, cluster)
                 metrics = _generate_pod_metrics(svc, state, rng)
+
+                if is_spiked:
+                    intensity_ratio = oom_intensity / 100.0
+                    # Override memory metrics for spiked pods
+                    for m in metrics:
+                        if m["name"] == "k8s.pod.memory_limit_utilization":
+                            m["gauge"]["dataPoints"][0]["asDouble"] = rng.uniform(0.92, 1.0) * intensity_ratio + (1 - intensity_ratio) * rng.uniform(0.25, 0.85)
+                        elif m["name"] == "k8s.container.restarts":
+                            # Increase restart probability: baseline 5% → up to 75%
+                            restart_chance = 0.05 + 0.70 * intensity_ratio
+                            if rng.random() < restart_chance:
+                                state.restarts[svc] += 1
+                                m["sum"]["dataPoints"][0]["asInt"] = str(state.restarts[svc])
+
                 resource_metrics.append({
                     "resource": pod_res,
                     "scopeMetrics": [{"scope": {"name": KUBELET_SCOPE, "version": SCOPE_VERSION}, "metrics": metrics}],
                 })
 
+                # Emit OOMKilled event log for spiked pods (probabilistic)
+                if is_spiked and rng.random() < 0.15 * intensity_ratio:
+                    _generate_oom_killed_log(client, svc, pod_data, cluster, rng)
+
+            # Determine if any node in this cluster has spiked services
+            cluster_has_spike = oom_intensity > 0 and (not has_active_faults or any(s in spiked_services for s in svcs))
+
             # Node-level metrics (one resource per node, k8sclusterreceiver scope)
             for node_name in pod_data["node_names"]:
                 node_res = _build_node_resource(node_name, pod_data, cluster)
                 metrics = _generate_node_metrics(rng)
+
+                if cluster_has_spike:
+                    # Set memory_pressure condition on affected nodes
+                    for m in metrics:
+                        if m["name"] == "k8s.node.condition_memory_pressure":
+                            m["gauge"]["dataPoints"][0]["asInt"] = str(1)
+
                 resource_metrics.append({
                     "resource": node_res,
                     "scopeMetrics": [{"scope": {"name": CLUSTER_SCOPE, "version": SCOPE_VERSION}, "metrics": metrics}],

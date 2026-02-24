@@ -221,6 +221,20 @@ class BaseScenario(ABC):
 
     # ── Fault Parameters ─────────────────────────────────────────────
 
+    def get_trace_attributes(self, service_name: str, rng) -> dict:
+        """Domain-specific attributes on ALL traces (always present)."""
+        return {}
+
+    def get_rca_clues(self, channel: int, service_name: str, rng) -> dict:
+        """Partial RCA clues on traces for services in active fault channels.
+        Different services get different clues — no single service has full picture."""
+        return {}
+
+    def get_correlation_attribute(self, channel: int, is_error: bool, rng) -> dict:
+        """Attribute correlated with errors: appears on ~90% of error traces,
+        ~5% of healthy traces. Discoverable via Elastic correlation analysis."""
+        return {}
+
     @abstractmethod
     def get_fault_params(self, channel: int) -> dict[str, Any]:
         """Generate realistic random fault parameters for a channel."""

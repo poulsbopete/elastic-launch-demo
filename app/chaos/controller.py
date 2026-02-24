@@ -37,6 +37,12 @@ class ChaosController:
                 "callback_url": "",
                 "user_email": "",
             }
+        self._infra_spikes: dict[str, float] = {
+            "cpu_pct": 0,
+            "memory_pct": 0,
+            "k8s_oom_intensity": 0,
+            "latency_multiplier": 1.0,
+        }
 
     def trigger(
         self,
@@ -184,3 +190,13 @@ class ChaosController:
     def get_active_channels(self) -> list[int]:
         with self._lock:
             return [ch_id for ch_id, ch in self._channels.items() if ch["state"] == ACTIVE]
+
+    def set_infra_spikes(self, spikes: dict[str, float]) -> None:
+        with self._lock:
+            for key in self._infra_spikes:
+                if key in spikes:
+                    self._infra_spikes[key] = float(spikes[key])
+
+    def get_infra_spikes(self) -> dict[str, float]:
+        with self._lock:
+            return dict(self._infra_spikes)

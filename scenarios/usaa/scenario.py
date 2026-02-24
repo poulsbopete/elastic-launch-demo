@@ -4,6 +4,7 @@ insurance claims processing, fraud detection, and member authentication."""
 from __future__ import annotations
 
 import random
+import time
 from typing import Any
 
 from scenarios.base import BaseScenario, CountdownConfig, UITheme
@@ -130,6 +131,19 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["mobile-gateway", "auth-gateway"],
                 "cascade_services": ["member-portal", "payment-engine"],
                 "description": "Mobile banking API requests exceeding response time SLA causing member app failures",
+                "investigation_notes": (
+                    "1. Check mobile-gateway connection pool utilization — pool_active near pool_max indicates exhaustion. "
+                    "Run: kubectl exec -it mobile-gateway -- curl localhost:8080/actuator/metrics/hikaricp.connections.active\n"
+                    "2. Review backend_routing phase — latency spike at this stage points to upstream service degradation, "
+                    "not the gateway itself. Check auth-gateway and payment-engine response times in APM.\n"
+                    "3. Inspect circuit breaker state: HALF_OPEN means the gateway is testing recovery. If stuck in HALF_OPEN "
+                    "for >60s, the upstream service is intermittently failing. Check: /actuator/health for dependency status.\n"
+                    "4. Queue depth >2000 indicates backpressure buildup — consider scaling mobile-gateway replicas or "
+                    "enabling request shedding. Check HPA metrics: kubectl get hpa mobile-gateway -n usaa-prod.\n"
+                    "5. Verify CACHE_STALE fallback is returning acceptable data — stale cached responses may show "
+                    "incorrect balances. Review cache TTL settings in mobile-gateway ConfigMap."
+                ),
+                "remediation_action": "restart_mobile_gateway",
                 "error_message": "[MOBILE] MOBILE-API-TIMEOUT: endpoint={endpoint} latency_ms={latency_ms} sla_ms={sla_ms} member={member_id} device={device_type}",
                 "stack_trace": (
                     "=== MOBILE GATEWAY LATENCY REPORT ===\n"
@@ -156,6 +170,19 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["mobile-gateway", "document-vault"],
                 "cascade_services": ["claims-processor", "payment-engine"],
                 "description": "Mobile check deposit image capture and processing pipeline failure",
+                "investigation_notes": (
+                    "1. Check the amount_verify stage — OCR-extracted amount vs member-entered amount mismatch is the "
+                    "most common failure. Review image quality scores; quality <85% correlates with OCR errors.\n"
+                    "2. Inspect MICR line extraction: routing and account numbers must parse correctly from the magnetic "
+                    "ink character recognition scan. Failed MICR reads require manual keying or re-capture.\n"
+                    "3. Verify Reg CC hold policies are correctly applied — military early pay eligibility and next-business-day "
+                    "availability depend on correct member tier classification in the deposit rules engine.\n"
+                    "4. Check document-vault connectivity — deposit images must be stored before processing continues. "
+                    "S3 upload failures in document-vault will block the entire deposit pipeline.\n"
+                    "5. Review duplicate detection window — 90-day lookback should catch re-deposited checks. "
+                    "If duplicate_check passes but amount_verify fails, the issue is OCR accuracy, not fraud."
+                ),
+                "remediation_action": "restart_deposit_processor",
                 "error_message": "[MOBILE] MOBILE-DEPOSIT-FAIL: deposit={deposit_id} amount=${deposit_amount} member={member_id} stage={deposit_stage} error={deposit_error}",
                 "stack_trace": (
                     "=== MOBILE DEPOSIT PIPELINE ===\n"
@@ -182,6 +209,19 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["mobile-gateway", "auth-gateway"],
                 "cascade_services": ["member-portal", "fraud-sentinel"],
                 "description": "Push notification system sending duplicate or excessive alerts to members",
+                "investigation_notes": (
+                    "1. Check dedup cache status — OVERFLOW at 500K entries means the cache cannot prevent duplicate sends. "
+                    "Inspect Redis memory: redis-cli INFO memory | grep used_memory_human.\n"
+                    "2. Identify the root_cause event_replay source — transaction_processor is re-emitting events that "
+                    "trigger notifications. Check transaction_processor logs for reprocessing or replay activity.\n"
+                    "3. Monitor APNS throttling — Apple will rate-limit and eventually block the push certificate if "
+                    "abuse continues. Check APNS feedback service for unregistered device tokens.\n"
+                    "4. Review member complaint volume — 200+ complaints in a notification storm triggers regulatory "
+                    "attention. CFPB considers excessive notifications a UDAAP (unfair practices) concern.\n"
+                    "5. Flush and resize the dedup cache immediately, then identify which event types are replaying. "
+                    "Check: SELECT event_type, COUNT(*) FROM notification_events WHERE ts > NOW() - INTERVAL 5 MINUTE GROUP BY event_type."
+                ),
+                "remediation_action": "flush_notification_queue",
                 "error_message": "[MOBILE] MOBILE-NOTIF-STORM: rate={notif_rate}/min max={notif_max}/min duplicates={notif_dupes} channel={notif_channel} window={notif_window_s}s",
                 "stack_trace": (
                     "=== NOTIFICATION SERVICE STATS ===\n"
@@ -209,6 +249,19 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["payment-engine", "mobile-gateway"],
                 "cascade_services": ["member-portal", "fraud-sentinel"],
                 "description": "ACH direct deposit batch processing delayed affecting military pay and allotments",
+                "investigation_notes": (
+                    "1. Check account_lookup stage — this is the bottleneck. High latency here indicates the member account "
+                    "database is under load or replication lag is causing timeouts on lookups.\n"
+                    "2. DFAS (Defense Finance and Accounting Service) military pay files arrive in the 06:00 ET Fed window. "
+                    "Delays past 08:00 ET affect Early Pay eligibility — members expecting funds by morning will call.\n"
+                    "3. Review NACHA file parsing metrics — entry counts >30K in a single batch may overwhelm the OFAC "
+                    "screening step. Consider splitting large DFAS batches into sub-batches of 10K entries.\n"
+                    "4. Check Aurora PostgreSQL connection pool on payment-engine: SELECT count(*) FROM pg_stat_activity "
+                    "WHERE state = 'active'. Connection saturation causes account_lookup stalls.\n"
+                    "5. Verify OFAC screening service response times — the 45s elapsed is within SLA but leaves no headroom. "
+                    "If OFAC screening degrades, the entire batch pipeline will breach SLA. Monitor Treasury SDN list update status."
+                ),
+                "remediation_action": "reset_ach_processor",
                 "error_message": "[PAY] PAY-ACH-DELAY: batch={ach_batch_id} entries={ach_entry_count} delay_min={ach_delay_min} sla_min={ach_sla_min} type={ach_type}",
                 "stack_trace": (
                     "=== ACH BATCH PROCESSING STATUS ===\n"
@@ -238,6 +291,19 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["payment-engine", "member-portal"],
                 "cascade_services": ["mobile-gateway", "document-vault"],
                 "description": "Scheduled bill payments failing to execute on due date",
+                "investigation_notes": (
+                    "1. Check FedACH window status — bill pay electronic payments can only transmit during Fed operating "
+                    "windows. If the window is CLOSED and retries are exhausted, payments queue until next window (06:00 ET).\n"
+                    "2. Review the specific failure reason: INSUFFICIENT_FUNDS requires member notification with balance info; "
+                    "PAYEE_ACCOUNT_CLOSED needs payee record update; ROUTING_NUMBER_INVALID indicates stale payee data.\n"
+                    "3. Assess late fee and credit impact risk — failed bill payments on due date can trigger late fees from "
+                    "payees and potential credit score impact. Flag HIGH risk payments for immediate member outreach.\n"
+                    "4. Check payment-engine retry logic — 3/3 attempts exhausted means auto-retry will not help. "
+                    "Manual intervention required: SELECT * FROM bill_payments WHERE status='FAILED' AND due_date=CURRENT_DATE.\n"
+                    "5. For military members on deployment, verify SCRA protections apply — late fees may be waivable "
+                    "under Servicemembers Civil Relief Act. Check member.deployment_status in member profile."
+                ),
+                "remediation_action": "restart_billpay_processor",
                 "error_message": "[PAY] PAY-BILLPAY-FAIL: payment={billpay_id} payee={payee_name} amount=${billpay_amount} member={member_id} reason={billpay_reason}",
                 "stack_trace": (
                     "=== BILL PAY EXECUTION LOG ===\n"
@@ -265,6 +331,19 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["payment-engine", "fraud-sentinel"],
                 "cascade_services": ["member-portal", "auth-gateway"],
                 "description": "Wire transfer held due to OFAC SDN list match requiring manual BSA review",
+                "investigation_notes": (
+                    "1. Review the OFAC match score and algorithm — JARO_WINKLER scores above 85% require BSA officer review "
+                    "within 24 hours per bank policy. Scores 75-85% may be false positives from common name patterns.\n"
+                    "2. Check the SDN list version — if the match is against a recently added entry, verify the member's "
+                    "identity against the actual SDN record. Military members with common names frequently trigger false matches.\n"
+                    "3. Wire destination analysis: PCS_RELOCATION and DEPLOYMENT_EXPENSE purposes to allied nations (DE, JP, KR, GB) "
+                    "are typically legitimate. Cross-reference with member's duty station assignment orders.\n"
+                    "4. BSA/AML compliance requirements: SAR filing must be evaluated within 24h SLA. If the wire exceeds $10K, "
+                    "verify CTR filing status. Check 314(b) information sharing requests from FinCEN.\n"
+                    "5. Do NOT release the wire without BSA officer sign-off — OFAC violations carry strict liability penalties "
+                    "up to $20M per violation. Escalate to BSA team: bsa-review@usaa.com with wire reference number."
+                ),
+                "remediation_action": "escalate_bsa_review",
                 "error_message": "[PAY] PAY-OFAC-BLOCK: wire={wire_id} amount=${wire_amount} member={member_id} match_score={ofac_score} list={ofac_list}",
                 "stack_trace": (
                     "=== OFAC SCREENING RESULT ===\n"
@@ -293,6 +372,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["payment-engine", "fraud-sentinel"],
                 "cascade_services": ["mobile-gateway", "member-portal"],
                 "description": "Debit card authorization requests failing at Visa/Mastercard network level",
+                "investigation_notes": (
+                    "1. Check the ISO 8583 response code: 05=Do Not Honor, 14=Invalid Card, 51=Insufficient Funds, "
+                    "54=Expired Card, 61=Exceeds Limit, 91=Issuer Unavailable, 96=System Malfunction.\n"
+                    "2. Response code 91 (SYSTEM_MALFUNCTION) indicates the card network itself is having issues — "
+                    "check Visa/Mastercard network status pages and recent advisories for regional outages.\n"
+                    "3. Verify STIP (Stand-In Processing) eligibility — if network_auth fails but STIP is available, "
+                    "the payment-engine should authorize locally using risk parameters and post-authorize later.\n"
+                    "4. Monitor decline rate by merchant MCC code — elevated declines at military exchanges (MCC 5411, AAFES) "
+                    "or commissaries (DeCA) indicate a pattern requiring immediate network liaison escalation.\n"
+                    "5. Check fraud-sentinel score — if fraud_score PASS with score 12/100 but network declines, the issue "
+                    "is external. Contact card network operations: Visa (1-800-847-2750) or MC (1-800-307-7309).\n"
+                    "6. Review retry_eligible flag — if true, implement exponential backoff retry (2s, 4s, 8s) before "
+                    "returning decline to member. Log all retry attempts for chargeback dispute support."
+                ),
+                "remediation_action": "reset_card_auth_gateway",
                 "error_message": "[PAY] PAY-CARD-AUTH-FAIL: auth={auth_id} card=****{card_last4} amount=${auth_amount} merchant={merchant_name} decline_code={decline_code}",
                 "stack_trace": (
                     "=== CARD AUTHORIZATION FAILURE ===\n"
@@ -323,6 +417,20 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["claims-processor", "document-vault"],
                 "cascade_services": ["payment-engine", "member-portal"],
                 "description": "First Notice of Loss intake queue backlogged after catastrophic weather event",
+                "investigation_notes": (
+                    "1. Activate CAT (catastrophe) response team — surge staffing protocol brings in adjusters from "
+                    "unaffected regions. Check CAT team deployment status and estimated time to field.\n"
+                    "2. Monitor intake vs processing rate deficit — at 55 claims/hr deficit, the backlog grows by ~1,320 "
+                    "claims per day. Enable virtual adjusting and photo-based estimates to increase processing throughput.\n"
+                    "3. Review claim distribution by type — auto_comp (hail/flood) claims marked HIGH severity require "
+                    "field inspection. Property claims marked SEVERE may need emergency mitigation services.\n"
+                    "4. Enable self-service FNOL paths: mobile app photo submission, automated triage chatbot, and "
+                    "simplified loss reporting forms to reduce call center load and queue depth.\n"
+                    "5. Check military base proximity — catastrophic events near military installations (Fort Liberty, "
+                    "Fort Cavazos, NAS Jacksonville) affect concentrated member populations. Coordinate with base "
+                    "family readiness groups for member outreach. Priority-queue SCRA-protected members."
+                ),
+                "remediation_action": "activate_cat_response",
                 "error_message": "[CLAIMS] CLAIMS-FNOL-BACKLOG: queue_depth={claims_queue} avg_wait_min={claims_wait_min} cat_event={cat_event} region={cat_region} pending={claims_pending}",
                 "stack_trace": (
                     "=== FNOL INTAKE STATUS ===\n"
@@ -351,6 +459,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["claims-processor", "document-vault"],
                 "cascade_services": ["member-portal", "mobile-gateway"],
                 "description": "AI-powered photo damage estimation model exceeding response time threshold",
+                "investigation_notes": (
+                    "1. Check GPU utilization on the DamageNet inference cluster — 98% GPU util with 847 queued batches "
+                    "indicates the model fleet is saturated. Scale GPU instances: aws autoscaling set-desired-capacity.\n"
+                    "2. The repair_vs_replace stage is the bottleneck — this is the most compute-intensive step requiring "
+                    "part-level damage classification and repair cost lookup against the CCC ONE/Mitchell databases.\n"
+                    "3. Review model version DamageNet-v4.2 performance — if inference P99 exceeds SLA after a recent "
+                    "model update, consider rolling back: kubectl rollout undo deployment/damage-estimator.\n"
+                    "4. Enable MANUAL_ADJUSTER fallback routing — estimated 2-4hr delay is acceptable for non-drivable "
+                    "vehicles. For drivable vehicles, provide preliminary estimate and supplement later.\n"
+                    "5. Monitor image preprocessing — low quality images (blur, poor lighting) cause the damage_detection "
+                    "stage to run multiple passes. Add client-side image quality validation before upload.\n"
+                    "6. Check if CAT event volume is causing the surge — photo estimates spike 10-20x after hailstorms. "
+                    "Pre-scale GPU fleet when CAT alerts are issued."
+                ),
+                "remediation_action": "scale_estimation_fleet",
                 "error_message": "[CLAIMS] CLAIMS-PHOTO-EST-TIMEOUT: claim={claim_id} model_latency_ms={model_latency_ms} sla_ms={model_sla_ms} vehicle={vehicle_desc} images={image_count}",
                 "stack_trace": (
                     "=== PHOTO ESTIMATION PIPELINE ===\n"
@@ -380,6 +503,22 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["claims-processor", "payment-engine"],
                 "cascade_services": ["member-portal", "document-vault"],
                 "description": "Claims settlement payment failing to disburse to member account or body shop",
+                "investigation_notes": (
+                    "1. Check the disbursement error type: PAYEE_ACCOUNT_MISMATCH means the body shop's banking details "
+                    "changed — verify with DRP (Direct Repair Program) network coordinator. DAILY_LIMIT_EXCEEDED requires "
+                    "treasury approval for limit override.\n"
+                    "2. For ROUTING_VALIDATION_FAIL, the payee's routing number failed ABA validation — cross-reference "
+                    "with the Federal Reserve's E-Payments routing directory: https://www.frbservices.org/EPaymentsDirectory.\n"
+                    "3. FRAUD_HOLD_ACTIVE means fraud-sentinel flagged the disbursement — review the fraud alert and "
+                    "determine if the hold is legitimate or a false positive from the claims payment pattern.\n"
+                    "4. Member impact: 12 days since loss with rental_extension=REQUIRED means the member's rental car "
+                    "coverage is expiring. Approve rental extension while disbursement is resolved to avoid out-of-pocket.\n"
+                    "5. For body shop payees in the DRP network, contact the shop directly to verify banking details. "
+                    "Non-DRP shops may require updated W-9 and payment authorization forms.\n"
+                    "6. Check 1099 generation — failed disbursements that were partially processed may need 1099 reversal "
+                    "to avoid incorrect tax reporting to the IRS."
+                ),
+                "remediation_action": "retry_claims_disbursement",
                 "error_message": "[CLAIMS] CLAIMS-DISBURSEMENT-FAIL: claim={claim_id} amount=${claim_amount} payee={claim_payee} method={disbursement_method} error={disbursement_error}",
                 "stack_trace": (
                     "=== CLAIMS DISBURSEMENT STATUS ===\n"
@@ -408,6 +547,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["policy-manager", "quote-engine"],
                 "cascade_services": ["member-portal", "document-vault"],
                 "description": "Automated policy renewal batch processing failing causing coverage gaps",
+                "investigation_notes": (
+                    "1. Check premium_calculation failure reason: RATING_ENGINE_TIMEOUT means the actuarial rating service "
+                    "is degraded — verify quote-engine health and response times in APM traces.\n"
+                    "2. MVR_DATA_STALE indicates driving record pulls returned cached data beyond acceptable freshness. "
+                    "Check the LexisNexis/TransUnion MVR feed connectivity and last successful pull timestamp.\n"
+                    "3. CLUE_SERVICE_UNAVAILABLE means loss history lookups failed — CLUE (Comprehensive Loss Underwriting "
+                    "Exchange) outages affect all carriers. Check A-PLUS/CLUE system status with LexisNexis.\n"
+                    "4. Coverage gap risk is HIGH — policies that fail renewal before effective_date create uninsured "
+                    "periods. Extend grace period to 30 days and notify members. State insurance departments require "
+                    "reporting of lapsed auto policies.\n"
+                    "5. Check SCRA-protected members — 12 policies with deployment_hold cannot be non-renewed under "
+                    "the Servicemembers Civil Relief Act. These must be manually renewed at the prior term premium.\n"
+                    "6. Run manual renewal batch for failed policies: POST /api/v1/policy/batch-renew with override flags."
+                ),
+                "remediation_action": "restart_renewal_engine",
                 "error_message": "[POLICY] POLICY-RENEWAL-FAIL: batch={renewal_batch_id} policies={renewal_count} failed={renewal_failed} reason={renewal_reason} effective={renewal_date}",
                 "stack_trace": (
                     "=== POLICY RENEWAL BATCH STATUS ===\n"
@@ -437,6 +591,22 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["quote-engine", "policy-manager"],
                 "cascade_services": ["member-portal", "claims-processor"],
                 "description": "Underwriting rules engine producing inconsistent decisions on policy applications",
+                "investigation_notes": (
+                    "1. Identify the conflicting rule — check which specific rule in the 2,847-rule chain is producing "
+                    "inconsistent results. Cross-reference with change_set CS-4827 deployed on 2026-02-15.\n"
+                    "2. Conflict rate 2.4% vs 0.5% threshold indicates a systematic issue, not isolated cases. Review "
+                    "the rule deployment diff: git diff CS-4826..CS-4827 -- rules/ to identify changed rules.\n"
+                    "3. Check rule execution order dependencies — rules like military_discount_eligibility and "
+                    "multi_policy_bundle may have ordering conflicts when both conditions apply simultaneously.\n"
+                    "4. Verify garaging_zip risk factors are using current ISO territory data — outdated territory "
+                    "mappings near military bases can cause incorrect risk classification (e.g., Fort Liberty zip codes).\n"
+                    "5. For affected applications, route to manual underwriting queue with full rule execution trace. "
+                    "Flag applications where expected=APPROVE but actual=DECLINE for priority review — these represent "
+                    "members being incorrectly denied coverage.\n"
+                    "6. Consider rules engine rollback if conflict rate doesn't stabilize within 1 hour. "
+                    "Rollback command: kubectl rollout undo deployment/rules-engine -n usaa-underwriting."
+                ),
+                "remediation_action": "rollback_rules_engine",
                 "error_message": "[UW] UW-RULES-ENGINE-ERR: application={app_id} product={insurance_product} rule={failed_rule} expected={expected_decision} actual={actual_decision}",
                 "stack_trace": (
                     "=== UNDERWRITING RULES ENGINE ===\n"
@@ -465,6 +635,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["quote-engine", "payment-engine"],
                 "cascade_services": ["member-portal", "document-vault"],
                 "description": "VA home loan rate lock requests failing due to secondary market pricing feed disruption",
+                "investigation_notes": (
+                    "1. Check GNMA (Ginnie Mae) MBS pricing feed status — STALE data 47min old means the secondary "
+                    "market pricing API is not responding. Verify connectivity to the pricing vendor feed.\n"
+                    "2. Secondary market conditions: 10yr Treasury at 4.28% with HIGH volatility means MBS prices are "
+                    "moving rapidly. Stale pricing creates risk of locking at incorrect rates.\n"
+                    "3. VA loan rate locks require current GNMA MBS pricing because VA loans are pooled into Ginnie Mae "
+                    "securities. Without accurate MBS pricing, the bank cannot calculate its margin correctly.\n"
+                    "4. Honor the quoted rate for members who received a rate quote before the feed went down — this is "
+                    "both regulatory best practice and member trust policy. Queue locks for execution when feed recovers.\n"
+                    "5. Check Certificate of Eligibility (COE) verification — ensure the VA eligibility service is still "
+                    "operational even if rate locking is paused. Members can continue applications without locking.\n"
+                    "6. Monitor the VA funding fee calculation — first-time use vs subsequent use rates differ, and "
+                    "disabled veterans may qualify for fee exemption. These calculations don't depend on MBS pricing."
+                ),
+                "remediation_action": "restart_ratelock_service",
                 "error_message": "[UW] UW-VA-RATELOCK-FAIL: loan={loan_id} rate={va_rate}% lock_period={lock_days}d member={member_id} error={ratelock_error}",
                 "stack_trace": (
                     "=== VA LOAN RATE LOCK STATUS ===\n"
@@ -495,6 +680,22 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["auth-gateway", "mobile-gateway"],
                 "cascade_services": ["member-portal", "fraud-sentinel"],
                 "description": "Biometric authentication (Face ID, fingerprint) verification service experiencing high failure rate",
+                "investigation_notes": (
+                    "1. Analyze failure distribution by method — voice_print at 32% fail rate is worst, likely due to "
+                    "background noise in military environments (flight line, motor pool, barracks). Consider increasing "
+                    "noise tolerance thresholds for voice authentication.\n"
+                    "2. Liveness check failures (42%) indicate potential issues with the anti-spoofing model, not member "
+                    "behavior. Check BioAuth-v3.1 model performance — last retrain was 2026-01-28, may need refresh.\n"
+                    "3. Template mismatch (31%) can occur after device changes or significant appearance changes common "
+                    "in military (new glasses, weight change during deployment). Prompt template re-enrollment.\n"
+                    "4. Monitor fallback path capacity — PIN attempts surging 340% means auth-gateway PIN verification "
+                    "is absorbing all biometric failures. Check auth-gateway rate limits and connection pool.\n"
+                    "5. Call center overflow at 22min wait indicates members cannot self-recover. Enable temporary "
+                    "password-based authentication bypass for verified members: POST /api/v1/auth/temp-bypass.\n"
+                    "6. Check device compatibility matrix — new iOS/Android versions may break biometric SDKs. "
+                    "Review crash reports from mobile-gateway for biometric SDK exceptions."
+                ),
+                "remediation_action": "reset_biometric_service",
                 "error_message": "[AUTH] AUTH-BIOMETRIC-DEGRADE: method={bio_method} fail_rate={bio_fail_rate}% threshold={bio_threshold}% attempts={bio_attempts} fallback={bio_fallback}",
                 "stack_trace": (
                     "=== BIOMETRIC SERVICE HEALTH ===\n"
@@ -524,6 +725,22 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["auth-gateway", "mobile-gateway"],
                 "cascade_services": ["member-portal", "payment-engine"],
                 "description": "Multi-factor authentication code delivery failing via SMS and email channels",
+                "investigation_notes": (
+                    "1. SMS delivery at 70% is critically degraded — check carrier blocking status. T-Mobile and Verizon "
+                    "SPAM_FILTER blocking on short code 872438 requires carrier re-registration and compliance review.\n"
+                    "2. Military-specific impact: OCONUS members (342 affected) on overseas deployments rely heavily on "
+                    "SMS MFA. Satellite phones do not support short code SMS. Enable TOTP bypass for deployed members.\n"
+                    "3. Check MFA provider status — Twilio and AWS SNS have regional outage dashboards. Provider RATE_LIMIT_EXCEEDED "
+                    "means the sending volume exceeded the provisioned throughput. Request limit increase.\n"
+                    "4. Deployed member lockout (89 members) is a critical issue — these members cannot authenticate "
+                    "to manage finances during deployment. Activate emergency access protocol: verify identity via "
+                    "security questions + last 4 SSN, then issue temporary TOTP enrollment.\n"
+                    "5. Route all SMS traffic to EMAIL fallback while SMS is degraded. For members without email on file, "
+                    "enable PUSH notification MFA through the mobile app.\n"
+                    "6. SCRA flag on affected accounts means special regulatory handling — ensure no account restrictions "
+                    "are applied due to authentication failures on SCRA-protected accounts."
+                ),
+                "remediation_action": "reset_mfa_delivery",
                 "error_message": "[AUTH] AUTH-MFA-DELIVERY-FAIL: channel={mfa_channel} delivery_rate={mfa_delivery_rate}% member={member_id} provider={mfa_provider} error={mfa_error}",
                 "stack_trace": (
                     "=== MFA DELIVERY STATUS ===\n"
@@ -553,6 +770,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["fraud-sentinel", "payment-engine"],
                 "cascade_services": ["mobile-gateway", "auth-gateway"],
                 "description": "Fraud detection model generating excessive false positives blocking legitimate member transactions",
+                "investigation_notes": (
+                    "1. Root cause is PCS_SEASON — Permanent Change of Station moves cause massive geographic velocity "
+                    "changes that the fraud model interprets as account takeover. This is a known seasonal pattern.\n"
+                    "2. Feature drift analysis: geo_velocity_feature at 0.92 drift and ip_diversity at 0.87 drift confirm "
+                    "the model's geographic features are firing on legitimate PCS relocations.\n"
+                    "3. With 4,200 active PCS orders, the model needs a PCS whitelist — members with active PCS orders "
+                    "should have relaxed geo-velocity thresholds. Query: SELECT member_id FROM pcs_orders WHERE status='ACTIVE'.\n"
+                    "4. Revenue impact at $892K/hr blocked is severe. Precision dropped to 3.2% means 97% of blocks are "
+                    "false positives. Immediately raise the fraud score threshold from current to 75/100 for PCS-flagged members.\n"
+                    "5. Initiate emergency model retrain with PCS-labeled training data. Include features: has_active_pcs, "
+                    "days_since_pcs_order, destination_matches_new_duty_station.\n"
+                    "6. Short-term fix: whitelist all members with active PCS orders in the fraud rules table. "
+                    "INSERT INTO fraud_whitelist SELECT member_id FROM pcs_orders WHERE status='ACTIVE' AND effective_date > CURRENT_DATE - 90."
+                ),
+                "remediation_action": "recalibrate_fraud_model",
                 "error_message": "[FRAUD] FRAUD-FP-SURGE: blocked={fraud_blocked} window={fraud_window_s}s fp_rate={fraud_fp_rate}% model={fraud_model} pattern={fraud_pattern}",
                 "stack_trace": (
                     "=== FRAUD MODEL PERFORMANCE ===\n"
@@ -583,6 +815,22 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["member-portal", "auth-gateway"],
                 "cascade_services": ["mobile-gateway", "payment-engine"],
                 "description": "Mass member session invalidation causing authentication storm and portal outage",
+                "investigation_notes": (
+                    "1. Redis cluster primary failure caused the session store to lose all active sessions. Check Redis "
+                    "sentinel logs: redis-cli -p 26379 SENTINEL get-master-addr-by-name usaa-sessions.\n"
+                    "2. Thundering herd problem: reauth rate exceeds auth-gateway capacity (rate vs 500/min). "
+                    "Implement token extension — issue new JWT tokens with extended TTL to surviving sessions without "
+                    "requiring full re-authentication.\n"
+                    "3. Circuit breaker on auth-gateway opened at T+12s — this prevents total auth system collapse but "
+                    "blocks all new logins. Set circuit breaker to HALF_OPEN with 10% traffic sampling.\n"
+                    "4. Redis cluster recovery: verify replicas 2/3 are healthy, promote a replica to primary. "
+                    "Command: redis-cli -p 26379 SENTINEL failover usaa-sessions. Estimated recovery 5min.\n"
+                    "5. Rate limit re-authentication attempts with exponential backoff on the client side — mobile app "
+                    "and portal should retry with jitter to prevent synchronized retry storms.\n"
+                    "6. Post-incident: implement session persistence to a secondary store (DynamoDB/Elasticache Global) "
+                    "so Redis primary failure doesn't cascade to full session loss."
+                ),
+                "remediation_action": "reset_session_pool",
                 "error_message": "[PORTAL] PORTAL-SESSION-CASCADE: invalidated={sessions_invalidated} active_before={sessions_active} trigger={session_trigger} reauth_rate={reauth_rate}/min",
                 "stack_trace": (
                     "=== SESSION CASCADE REPORT ===\n"
@@ -612,6 +860,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["document-vault", "member-portal"],
                 "cascade_services": ["claims-processor", "policy-manager"],
                 "description": "Document upload and digital storage service failing affecting claims photos and policy documents",
+                "investigation_notes": (
+                    "1. Check S3 upload failure type: S3_WRITE_TIMEOUT indicates network latency to S3 endpoint — verify "
+                    "VPC endpoint configuration and S3 gateway endpoint health in us-east-1.\n"
+                    "2. BUCKET_QUOTA_EXCEEDED means storage limits hit — check bucket metrics: aws s3api head-bucket "
+                    "--bucket usaa-member-docs-prod. Request quota increase or implement lifecycle policy for old documents.\n"
+                    "3. ENCRYPTION_KEY_ERROR indicates KMS key access issue — verify the document-vault service role has "
+                    "kms:GenerateDataKey and kms:Decrypt permissions. Check KMS key rotation status.\n"
+                    "4. PII detection pipeline is working (ssn=REDACTED, dob=REDACTED) but uploads are blocking at S3. "
+                    "With 2,847 queued documents and oldest pending 12min, enable local cache fallback to prevent data loss.\n"
+                    "5. Critical document types: DD214_DISCHARGE and COE_VA_LOAN uploads are time-sensitive for member "
+                    "benefits. Flag these for priority retry when S3 recovers.\n"
+                    "6. Check virus_scan throughput — ClamAV scanning should not be the bottleneck but verify: "
+                    "kubectl logs -l app=document-vault --tail=100 | grep 'virus_scan' | grep -c 'TIMEOUT'."
+                ),
+                "remediation_action": "restart_document_service",
                 "error_message": "[DOC] DOC-UPLOAD-FAIL: upload={upload_id} type={doc_type} size_mb={doc_size_mb} member={member_id} error={upload_error}",
                 "stack_trace": (
                     "=== DOCUMENT UPLOAD SERVICE ===\n"
@@ -643,6 +906,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["payment-engine", "mobile-gateway"],
                 "cascade_services": ["claims-processor", "member-portal"],
                 "description": "Primary-replica database replication lag causing stale reads and balance inconsistencies",
+                "investigation_notes": (
+                    "1. Replication lag root cause: WAL replay rate (8MB/s) cannot keep up with WAL send rate (12MB/s) — "
+                    "33% throughput deficit means lag will continue growing. Check replica disk IOPS saturation.\n"
+                    "2. Stale balance reads affect 33% of queries (round-robin across 3 nodes, 1 lagged) — members may "
+                    "see incorrect available balances, leading to overdrafts or failed transactions.\n"
+                    "3. Immediate action: route all reads to primary to ensure consistency. This increases primary load "
+                    "but prevents stale data. Command: UPDATE pg_settings SET setting='primary' WHERE name='read_routing'.\n"
+                    "4. Scale replica IOPS: aws rds modify-db-instance --db-instance-identifier {cluster}-b "
+                    "--iops 10000 --apply-immediately. Current IOPS is SATURATED — Aurora allows up to 64K IOPS.\n"
+                    "5. Check for long-running queries on the replica that may be blocking WAL replay: "
+                    "SELECT pid, now()-query_start, query FROM pg_stat_activity WHERE state='active' ORDER BY query_start.\n"
+                    "6. Monitor pending_txns — if this exceeds 100K, the replica may need to be rebuilt from snapshot. "
+                    "Aurora can create a new replica in ~15 minutes from the primary's storage volume."
+                ),
+                "remediation_action": "failover_db_replica",
                 "error_message": "[INFRA] INFRA-DB-REPL-LAG: cluster={db_cluster} lag_ms={db_lag_ms} max_ms={db_max_lag_ms} replica={db_replica} pending_txns={db_pending_txns}",
                 "stack_trace": (
                     "=== DATABASE REPLICATION STATUS ===\n"
@@ -671,6 +949,21 @@ class USAAScenario(BaseScenario):
                 "affected_services": ["auth-gateway", "mobile-gateway"],
                 "cascade_services": ["payment-engine", "member-portal"],
                 "description": "TLS certificate expiration causing cascading authentication and API failures",
+                "investigation_notes": (
+                    "1. Check ACME auto-renewal failure — DNS_CHALLENGE_TIMEOUT indicates the DNS TXT record for domain "
+                    "validation could not be created or propagated. Verify Route53/Cloud DNS API permissions.\n"
+                    "2. Impact assessment: mobile-gateway and auth-gateway are FAILING (ERR_CERT_DATE_INVALID) — all "
+                    "mobile app and authentication traffic is affected. member-portal is DEGRADED using pinned cert fallback.\n"
+                    "3. Emergency certificate issuance: use AWS ACM for immediate cert provisioning if the domain is "
+                    "AWS-hosted. For cross-cloud domains, use DigiCert rapid SSL: openssl req -new -key server.key -out server.csr.\n"
+                    "4. Check cert-manager pod health in Kubernetes: kubectl get pods -n cert-manager -o wide. If cert-manager "
+                    "is DEGRADED, manually install the cert: kubectl create secret tls {domain}-tls --cert=cert.pem --key=key.pem.\n"
+                    "5. For mTLS-dependent services (payment-engine), the intermediate CA must also be valid. Check the "
+                    "full certificate chain: openssl s_client -connect api.usaa.com:443 -showcerts.\n"
+                    "6. Post-incident: implement certificate expiration monitoring at 30/14/7/3/1 day thresholds. "
+                    "Add cert-monitor alert rule to prevent future expiration cascades."
+                ),
+                "remediation_action": "emergency_cert_renewal",
                 "error_message": "[INFRA] INFRA-CERT-EXPIRE: domain={cert_domain} expires_in={cert_hours_left}h serial={cert_serial} issuer={cert_issuer} services_affected={cert_svc_count}",
                 "stack_trace": (
                     "=== CERTIFICATE STATUS REPORT ===\n"
@@ -1036,6 +1329,232 @@ class USAAScenario(BaseScenario):
             MemberPortalService,
             DocumentVaultService,
         ]
+
+    # ── Trace Attributes & RCA ───────────────────────────────────────
+
+    def get_trace_attributes(self, service_name: str, rng) -> dict:
+        session_epoch = int(time.time()) % 86400
+        base = {
+            "member.segment": rng.choice(["active-duty", "veteran", "family", "retired", "guard-reserve"]),
+            "platform.channel": rng.choice(["mobile", "web", "api", "ivr"]),
+        }
+        svc_attrs = {
+            "mobile-gateway": {
+                "gateway.platform": rng.choice(["iOS", "Android", "iPadOS"]),
+                "gateway.api_version": rng.choice(["v1.8.2", "v1.9.0", "v2.0.0-beta", "v1.8.5"]),
+                "gateway.session_age_s": session_epoch % 3600,
+                "gateway.device_trust_level": rng.choice(["trusted", "registered", "unknown"]),
+            },
+            "claims-processor": {
+                "claims.type": rng.choice(["auto_collision", "auto_comprehensive", "homeowners", "renters", "life"]),
+                "claims.priority": rng.choice(["standard", "high", "urgent", "catastrophe"]),
+                "claims.adjuster_pool": rng.choice(["internal", "DRP_network", "CAT_team", "virtual"]),
+                "claims.fnol_channel": rng.choice(["mobile_app", "call_center", "web_portal", "agent"]),
+            },
+            "payment-engine": {
+                "payment.method": rng.choice(["ACH", "wire", "debit_card", "bill_pay", "P2P", "check"]),
+                "payment.amount_tier": rng.choice(["micro", "standard", "large", "wire_threshold"]),
+                "payment.rail": rng.choice(["FedACH", "FedWire", "Visa_Direct", "RTP", "NACHA_batch"]),
+                "payment.compliance_check": rng.choice(["OFAC_clear", "CTR_pending", "SAR_review", "clear"]),
+            },
+            "policy-manager": {
+                "policy.type": rng.choice(["auto", "homeowners", "renters", "umbrella", "life", "VPP"]),
+                "policy.renewal_status": rng.choice(["active", "pending_renewal", "grace_period", "lapsed"]),
+                "policy.underwriting_tier": rng.choice(["preferred", "standard", "non_standard", "military_discount"]),
+                "policy.state_jurisdiction": rng.choice(["TX", "VA", "CA", "FL", "NC", "GA", "WA"]),
+            },
+            "fraud-sentinel": {
+                "fraud.risk_score": rng.randint(0, 100),
+                "fraud.model_version": rng.choice(["FraudNet-v5.2", "FraudNet-v5.3-canary", "FraudNet-v5.1"]),
+                "fraud.detection_method": rng.choice(["ML_ensemble", "rules_engine", "velocity_check", "geo_analysis"]),
+                "fraud.alert_disposition": rng.choice(["auto_cleared", "pending_review", "confirmed", "escalated"]),
+            },
+            "auth-gateway": {
+                "auth.method": rng.choice(["biometric_face", "biometric_fingerprint", "mfa_sms", "mfa_totp", "password", "CAC_PIV"]),
+                "auth.device_trust": rng.choice(["enrolled", "verified", "new_device", "jailbroken_suspect"]),
+                "auth.session_type": rng.choice(["interactive", "api_token", "service_account", "refresh_token"]),
+                "auth.risk_signal": rng.choice(["low", "medium", "elevated", "high"]),
+            },
+            "quote-engine": {
+                "quote.product_line": rng.choice(["auto", "homeowners", "renters", "umbrella", "VA_mortgage", "life"]),
+                "quote.rating_algorithm": rng.choice(["actuarial_v7", "ML_pricing_v3", "manual_rate", "competitive_match"]),
+                "quote.military_discount_applied": rng.choice([True, True, True, False]),
+                "quote.bundle_eligible": rng.choice([True, False]),
+            },
+            "member-portal": {
+                "portal.page_context": rng.choice(["dashboard", "accounts", "claims", "insurance", "investments", "settings"]),
+                "portal.session_duration_s": rng.randint(30, 1800),
+                "portal.accessibility_mode": rng.choice(["standard", "high_contrast", "screen_reader", "large_text"]),
+                "portal.content_personalization": rng.choice(["active_duty", "veteran", "spouse", "general"]),
+            },
+            "document-vault": {
+                "document.type": rng.choice(["DD214", "COE_VA_loan", "claims_photo", "policy_dec_page", "tax_1099", "bank_statement"]),
+                "document.classification": rng.choice(["PII", "PHI", "financial", "military_record", "general"]),
+                "document.storage_tier": rng.choice(["hot", "warm", "archive", "compliance_hold"]),
+                "document.encryption_status": rng.choice(["AES256_KMS", "AES256_SSE", "client_side_encrypted"]),
+            },
+        }
+        base.update(svc_attrs.get(service_name, {}))
+        return base
+
+    def get_rca_clues(self, channel: int, service_name: str, rng) -> dict:
+        clues = {
+            1: {  # Mobile App API Timeout
+                "mobile-gateway": {"gateway.connection_pool_active": rng.randint(800, 1000), "gateway.backend_routing_phase": "stalled"},
+                "auth-gateway": {"auth.token_verify_latency_ms": rng.randint(400, 900), "auth.session_cache_hit_rate": round(rng.uniform(0.1, 0.3), 2)},
+                "member-portal": {"upstream.degraded_dependency": "mobile-gateway", "portal.response_queue_depth": rng.randint(1500, 3000)},
+                "payment-engine": {"payment.upstream_timeout_count": rng.randint(50, 200), "payment.circuit_breaker_state": "HALF_OPEN"},
+            },
+            2: {  # Mobile Deposit Processing Failure
+                "mobile-gateway": {"gateway.deposit_ocr_quality": round(rng.uniform(55, 84), 1), "gateway.image_capture_retries": rng.randint(2, 5)},
+                "document-vault": {"document.s3_upload_status": "TIMEOUT", "document.queue_depth": rng.randint(500, 2000)},
+                "claims-processor": {"claims.deposit_image_missing": True, "claims.pipeline_blocked_by": "document-vault"},
+                "payment-engine": {"payment.deposit_hold_policy": "REG_CC_EXTENDED", "payment.micr_parse_status": "FAILED"},
+            },
+            3: {  # Push Notification Storm
+                "mobile-gateway": {"gateway.notification_rate_per_min": rng.randint(8000, 15000), "gateway.dedup_cache_status": "OVERFLOW"},
+                "auth-gateway": {"auth.notification_trigger_source": "event_replay", "auth.apns_throttle_status": "RATE_LIMITED"},
+                "member-portal": {"portal.complaint_volume": rng.randint(150, 400), "portal.unsubscribe_spike": True},
+                "fraud-sentinel": {"fraud.notification_anomaly_detected": True, "fraud.alert_source": "transaction_processor_replay"},
+            },
+            4: {  # ACH Direct Deposit Delay
+                "payment-engine": {"payment.ach_batch_stage": "account_lookup_stalled", "payment.nacha_entry_count": rng.randint(20000, 40000)},
+                "mobile-gateway": {"gateway.early_pay_status": "DELAYED", "gateway.member_inquiries_spike": True},
+                "member-portal": {"portal.balance_display_stale": True, "portal.dfas_pay_eta": "UNKNOWN"},
+                "fraud-sentinel": {"fraud.ach_screening_queue_depth": rng.randint(5000, 15000), "fraud.ofac_response_ms": rng.randint(30000, 60000)},
+            },
+            5: {  # Bill Pay Execution Failure
+                "payment-engine": {"payment.billpay_fedach_window": "CLOSED", "payment.retry_attempts_exhausted": True},
+                "member-portal": {"portal.billpay_failure_notifications": rng.randint(100, 500), "portal.late_fee_risk_count": rng.randint(50, 200)},
+                "mobile-gateway": {"gateway.billpay_status_queries_spike": rng.randint(2000, 8000), "gateway.payment_confirmation": "PENDING"},
+                "document-vault": {"document.payment_receipt_generation": "BLOCKED", "document.receipt_queue_depth": rng.randint(200, 800)},
+            },
+            6: {  # Wire Transfer OFAC Block
+                "payment-engine": {"payment.wire_hold_reason": "OFAC_SDN_MATCH", "payment.bsa_review_sla_hours": 24},
+                "fraud-sentinel": {"fraud.ofac_match_algorithm": "JARO_WINKLER", "fraud.match_score_pct": round(rng.uniform(75, 95), 1)},
+                "member-portal": {"portal.wire_status_display": "HELD_FOR_REVIEW", "portal.member_notification": "PENDING"},
+                "auth-gateway": {"auth.wire_authorization_level": "BSA_OFFICER_REQUIRED", "auth.dual_control_status": "AWAITING_SECOND"},
+            },
+            7: {  # Debit Card Authorization Failure
+                "payment-engine": {"payment.iso8583_response_code": rng.choice(["05", "91", "96"]), "payment.network_auth_status": "DECLINED"},
+                "fraud-sentinel": {"fraud.card_risk_score": rng.randint(5, 25), "fraud.card_screening_result": "PASS"},
+                "mobile-gateway": {"gateway.card_decline_display": "NETWORK_ERROR", "gateway.stip_eligible": False},
+                "member-portal": {"portal.card_decline_notification_sent": True, "portal.merchant_mcc": rng.choice(["5411", "5541", "5999", "7011"])},
+            },
+            8: {  # Claims FNOL Intake Backlog
+                "claims-processor": {"claims.intake_rate_per_hr": rng.randint(120, 180), "claims.processing_rate_per_hr": rng.randint(60, 95)},
+                "document-vault": {"document.fnol_image_queue": rng.randint(500, 2000), "document.cat_event_volume": "SURGE"},
+                "payment-engine": {"payment.claim_advance_requests": rng.randint(50, 200), "payment.rental_extensions_pending": rng.randint(80, 300)},
+                "member-portal": {"portal.fnol_self_service_enabled": True, "portal.claims_status_queries_spike": rng.randint(3000, 10000)},
+            },
+            9: {  # Photo Damage Estimation Timeout
+                "claims-processor": {"claims.gpu_utilization_pct": round(rng.uniform(93, 99), 1), "claims.model_inference_queue": rng.randint(500, 1200)},
+                "document-vault": {"document.damage_photo_resolution": rng.choice(["4K", "1080p", "720p"]), "document.image_preprocessing_ms": rng.randint(300, 800)},
+                "member-portal": {"portal.estimate_eta_display": "DELAYED", "portal.manual_adjuster_fallback": True},
+                "mobile-gateway": {"gateway.photo_upload_success_rate": round(rng.uniform(0.85, 0.95), 2), "gateway.damage_estimate_timeout": True},
+            },
+            10: {  # Claims Payment Disbursement Failure
+                "claims-processor": {"claims.disbursement_error_type": rng.choice(["PAYEE_ACCOUNT_MISMATCH", "ROUTING_VALIDATION_FAIL", "DAILY_LIMIT_EXCEEDED"]), "claims.days_since_loss": rng.randint(5, 30)},
+                "payment-engine": {"payment.disbursement_retry_count": 3, "payment.drp_payee_validation": "FAILED"},
+                "member-portal": {"portal.rental_extension_needed": True, "portal.member_outreach_status": "PENDING"},
+                "document-vault": {"document.w9_on_file": rng.choice([True, False]), "document.tax_1099_status": "BLOCKED"},
+            },
+            11: {  # Policy Renewal Batch Failure
+                "policy-manager": {"policy.renewal_batch_failure_reason": rng.choice(["RATING_ENGINE_TIMEOUT", "MVR_DATA_STALE", "CLUE_SERVICE_UNAVAILABLE"]), "policy.scra_protected_count": rng.randint(5, 20)},
+                "quote-engine": {"quote.rating_engine_response_ms": rng.randint(8000, 30000), "quote.actuarial_model_status": "DEGRADED"},
+                "member-portal": {"portal.renewal_notice_generation": "BLOCKED", "portal.coverage_gap_risk_count": rng.randint(100, 500)},
+                "document-vault": {"document.dec_page_generation": "QUEUED", "document.renewal_docs_pending": rng.randint(200, 800)},
+            },
+            12: {  # Underwriting Rules Engine Error
+                "quote-engine": {"quote.rules_engine_conflict_rate_pct": round(rng.uniform(1.5, 4.0), 1), "quote.change_set_version": "CS-4827"},
+                "policy-manager": {"policy.manual_uw_queue_depth": rng.randint(50, 300), "policy.incorrect_decline_count": rng.randint(10, 80)},
+                "member-portal": {"portal.application_status_display": "UNDER_REVIEW", "portal.member_callback_requested": rng.randint(20, 100)},
+                "claims-processor": {"claims.coverage_verification_delayed": True, "claims.rule_conflict_flag": True},
+            },
+            13: {  # VA Loan Rate Lock Failure
+                "quote-engine": {"quote.gnma_mbs_feed_age_min": rng.randint(30, 120), "quote.secondary_market_status": "STALE"},
+                "payment-engine": {"payment.va_funding_fee_calc_status": "OK", "payment.escrow_setup_blocked": True},
+                "member-portal": {"portal.rate_quote_display": "UNAVAILABLE", "portal.coe_verification_status": "VALID"},
+                "document-vault": {"document.coe_document_on_file": True, "document.loan_package_generation": "BLOCKED"},
+            },
+            14: {  # Biometric Auth Service Degradation
+                "auth-gateway": {"auth.biometric_fail_rate_pct": round(rng.uniform(20, 40), 1), "auth.liveness_check_status": "DEGRADED"},
+                "mobile-gateway": {"gateway.biometric_sdk_version": rng.choice(["BioAuth-v3.1", "BioAuth-v3.0"]), "gateway.fallback_pin_surge_pct": rng.randint(200, 500)},
+                "member-portal": {"portal.auth_fallback_active": True, "portal.call_center_wait_min": rng.randint(15, 35)},
+                "fraud-sentinel": {"fraud.identity_verification_degraded": True, "fraud.biometric_spoof_attempts": rng.randint(0, 5)},
+            },
+            15: {  # MFA Delivery Failure
+                "auth-gateway": {"auth.sms_delivery_rate_pct": round(rng.uniform(60, 78), 1), "auth.carrier_block_list": rng.choice(["T-MOBILE", "VERIZON", "T-MOBILE,VERIZON"])},
+                "mobile-gateway": {"gateway.mfa_fallback_channel": rng.choice(["PUSH", "EMAIL", "TOTP"]), "gateway.oconus_members_affected": rng.randint(200, 500)},
+                "member-portal": {"portal.deployed_member_lockout_count": rng.randint(50, 150), "portal.scra_flag_check": True},
+                "payment-engine": {"payment.mfa_blocked_transactions": rng.randint(500, 2000), "payment.step_up_auth_failures": rng.randint(100, 500)},
+            },
+            16: {  # Fraud Model False Positive Surge
+                "fraud-sentinel": {"fraud.false_positive_rate_pct": round(rng.uniform(8, 18), 1), "fraud.trigger_pattern": "PCS_SEASON"},
+                "payment-engine": {"payment.blocked_txn_revenue_per_hr": rng.randint(500000, 1200000), "payment.auto_decline_count": rng.randint(200, 800)},
+                "mobile-gateway": {"gateway.member_block_complaints": rng.randint(100, 400), "gateway.txn_retry_surge": True},
+                "auth-gateway": {"auth.pcs_whitelist_status": "NOT_APPLIED", "auth.geo_velocity_alerts": rng.randint(500, 2000)},
+            },
+            17: {  # Member Session Timeout Cascade
+                "member-portal": {"portal.sessions_lost": rng.randint(10000, 50000), "portal.redis_cluster_status": "PRIMARY_DOWN"},
+                "auth-gateway": {"auth.reauth_storm_rate_per_min": rng.randint(2000, 8000), "auth.circuit_breaker_state": "OPEN"},
+                "mobile-gateway": {"gateway.session_recovery_attempts": rng.randint(5000, 20000), "gateway.jwt_extension_enabled": False},
+                "payment-engine": {"payment.in_flight_txn_orphaned": rng.randint(50, 300), "payment.session_dependent_holds": rng.randint(20, 100)},
+            },
+            18: {  # Document Upload Service Failure
+                "document-vault": {"document.s3_error_type": rng.choice(["S3_WRITE_TIMEOUT", "BUCKET_QUOTA_EXCEEDED", "ENCRYPTION_KEY_ERROR"]), "document.upload_queue_depth": rng.randint(1000, 5000)},
+                "member-portal": {"portal.upload_retry_display": "FAILED", "portal.member_docs_pending": rng.randint(200, 1000)},
+                "claims-processor": {"claims.photo_attachment_blocked": True, "claims.claims_without_docs": rng.randint(50, 200)},
+                "policy-manager": {"policy.dec_page_storage_blocked": True, "policy.renewal_docs_delayed": rng.randint(100, 400)},
+            },
+            19: {  # Database Replication Lag
+                "payment-engine": {"payment.db_repl_lag_ms": rng.randint(5000, 30000), "payment.wal_replay_deficit_pct": round(rng.uniform(20, 50), 0)},
+                "mobile-gateway": {"gateway.stale_balance_reads_pct": round(rng.uniform(25, 40), 1), "gateway.read_routing_policy": "ROUND_ROBIN"},
+                "claims-processor": {"claims.claim_status_stale": True, "claims.db_read_routing": "REPLICA_LAGGED"},
+                "member-portal": {"portal.balance_inconsistency_reports": rng.randint(50, 200), "portal.overdraft_risk_elevated": True},
+            },
+            20: {  # Certificate Expiration Cascade
+                "auth-gateway": {"auth.tls_cert_remaining_hours": round(rng.uniform(-2, 4), 1), "auth.acme_renewal_status": "DNS_CHALLENGE_TIMEOUT"},
+                "mobile-gateway": {"gateway.tls_handshake_failures": rng.randint(5000, 20000), "gateway.cert_pinning_fallback": rng.choice([True, False])},
+                "payment-engine": {"payment.mtls_validation_status": "WARNING", "payment.cert_chain_valid": False},
+                "member-portal": {"portal.cert_status": "DEGRADED", "portal.pinned_cert_fallback_active": True},
+            },
+        }
+        channel_clues = clues.get(channel, {})
+        return channel_clues.get(service_name, {})
+
+    def get_correlation_attribute(self, channel: int, is_error: bool, rng) -> dict:
+        correlation_attrs = {
+            1: ("deployment.api_gateway_version", "gateway-v2.9.1-canary"),
+            2: ("infra.ocr_engine_version", "tesseract-v5.3.4-patch1"),
+            3: ("runtime.notification_broker", "rabbitmq-v3.12.14-hotfix"),
+            4: ("infra.nacha_parser_version", "nacha-proc-v4.1.0-rc2"),
+            5: ("deployment.billpay_scheduler", "quartz-v2.5.0-experimental"),
+            6: ("infra.ofac_sdn_list_version", "sdn-2026-02-15-delta"),
+            7: ("network.card_network_proxy", "visa-proxy-v1.4.3-unstable"),
+            8: ("deployment.claims_intake_build", "fnol-intake-v3.7.0-beta"),
+            9: ("runtime.damage_model_weights", "DamageNet-v4.2.1-retrain"),
+            10: ("infra.disbursement_routing_table", "pay-route-v2.1.0-rc3"),
+            11: ("deployment.rating_engine_rules", "actuarial-rules-CS-4827"),
+            12: ("runtime.underwriting_rule_chain", "uw-rules-v7.4.1-canary"),
+            13: ("infra.mbs_pricing_feed", "gnma-feed-adapter-v2.0.3-patch"),
+            14: ("deployment.biometric_sdk", "bioauth-v3.1.2-rc1"),
+            15: ("infra.sms_gateway_config", "twilio-gw-v4.8.0-hotfix"),
+            16: ("runtime.fraud_model_weights", "FraudNet-v5.3-canary-weights"),
+            17: ("infra.redis_cluster_config", "redis-7.2.4-sentinel-patch"),
+            18: ("deployment.s3_endpoint_config", "vpc-endpoint-v1.3.0-rc2"),
+            19: ("infra.aurora_replica_config", "aurora-pg15-iops-tuned-v2"),
+            20: ("deployment.cert_manager_version", "cert-manager-v1.14.5-rc1"),
+        }
+        attr_key, attr_val = correlation_attrs.get(channel, ("deployment.api_gateway_version", "unknown"))
+        # 90% on errors, 5% on healthy
+        if is_error:
+            if rng.random() < 0.90:
+                return {attr_key: attr_val}
+        else:
+            if rng.random() < 0.05:
+                return {attr_key: attr_val}
+        return {}
 
     # ── Fault Parameters ──────────────────────────────────────────────
 

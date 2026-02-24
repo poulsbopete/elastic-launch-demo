@@ -128,6 +128,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["ehr-system", "lab-integration"],
                 "cascade_services": ["patient-monitor", "clinical-alerts"],
                 "description": "HL7 v2.x message parsing fails due to malformed segments or unsupported message types in the ADT interface",
+                "investigation_notes": (
+                    "Root Cause: Malformed HL7 v2.x segments typically originate from upstream ADT/ORM source systems sending "
+                    "non-standard field encodings or unsupported Z-segments. Check the MSH-9 message type and MSH-12 version "
+                    "against the interface specification.\n"
+                    "Remediation: 1) Review the ACK/NAK disposition — AE (Application Error) vs AR (Application Reject) determines "
+                    "retry eligibility. 2) Inspect the Mirth Connect or Rhapsody channel logs for the failing message ID. "
+                    "3) Flush the dead-letter queue: `./mirth-cli queue flush --channel ADT-INBOUND --state ERROR`. "
+                    "4) If messages are stuck, restart the HL7 listener: `systemctl restart mirth-hl7-listener`. "
+                    "5) Verify segment encoding with: `hl7-validator --file /tmp/failed_msg.hl7 --version 2.5.1`. "
+                    "6) Reconcile message control IDs in the MSA segment to ensure no duplicate deliveries after recovery."
+                ),
+                "remediation_action": "restart_hl7_interface",
                 "error_message": "[EHR] HL7-ACK-AE: msg_type={msg_type} segment={hl7_segment} position={position} patient=MRN-{mrn}",
                 "stack_trace": (
                     "MSH|^~\\&|EHR-CORE|FACILITY-01|LAB-LIS|LAB-01|20260217143052||{msg_type}|MSG-{mrn}.001|P|2.5.1|||AL|NE\n"
@@ -149,6 +161,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["patient-monitor", "clinical-alerts"],
                 "cascade_services": ["ehr-system"],
                 "description": "Excessive simultaneous vital sign alerts overwhelming the alerting pipeline from bedside monitors",
+                "investigation_notes": (
+                    "Root Cause: Alert storms occur when bedside monitor thresholds are misconfigured or a genuine multi-patient "
+                    "event (e.g., unit-wide SpO2 probe disconnects during rounds) floods the clinical alerting pipeline. The GE/Philips "
+                    "central station queues alerts faster than the CDS engine can evaluate them.\n"
+                    "Remediation: 1) Check the alert threshold configuration on the central monitoring station for the affected "
+                    "nursing unit — verify HR, SpO2, RR, and BP limits match unit acuity (ICU vs MedSurg). "
+                    "2) Recalibrate monitors: `monitor-admin recalibrate --unit {nursing_unit} --params HR,SpO2,RR`. "
+                    "3) Reset the vitals feed aggregator: `systemctl restart vitals-feed-aggregator`. "
+                    "4) Enable alert suppression windowing (10s dedup) on the central station to prevent duplicate firings. "
+                    "5) Review biomedical engineering ticket queue for known sensor hardware faults on the unit."
+                ),
+                "remediation_action": "recalibrate_monitors",
                 "error_message": "[MONITOR] VITAL-ALERT-STORM: unit={nursing_unit} alerts={alert_count} window={window_seconds}s patient={patient_id} hr={heart_rate} spo2={spo2}%",
                 "stack_trace": (
                     "=== BEDSIDE MONITOR ALERT SUMMARY — {nursing_unit} ===\n"
@@ -175,6 +199,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["lab-integration", "ehr-system"],
                 "cascade_services": ["pharmacy-system", "clinical-alerts"],
                 "description": "Laboratory result delivery exceeds critical TAT threshold, delaying clinical decisions",
+                "investigation_notes": (
+                    "Root Cause: TAT breaches stem from either LIS instrument interface backlogs, specimen processing delays, "
+                    "or the HL7 ORU^R01 result delivery queue being stalled. STAT orders should have a 30-minute TAT for "
+                    "critical tests (Troponin, BNP, Lactate) but queue congestion delays the OBX result segments.\n"
+                    "Remediation: 1) Check the LIS outbound queue depth: `lis-admin queue-status --interface EHR-RESULTS`. "
+                    "2) Verify the ASTM/LIS2-A2 instrument interface is connected: `netstat -an | grep 5562`. "
+                    "3) For stuck results, force requeue: `lis-admin requeue --order {lab_order_id} --priority STAT`. "
+                    "4) Review the analyzer worklist for instrument flags (QC lockout, reagent expiry). "
+                    "5) If the HL7 result channel is down, restart: `systemctl restart lis-hl7-outbound`. "
+                    "6) Notify lab supervisor and clinical staff of delayed critical results per CAP notification protocol."
+                ),
+                "remediation_action": "restart_lis_interface",
                 "error_message": "[LIS] LIS-RESULT-DELAY: order={lab_order_id} test={test_code} tat={tat_minutes}min sla={max_tat}min patient={patient_id}",
                 "stack_trace": (
                     "H|\\^&|||LIS-CORE^Lab Integration|||||LIS2-A2||P|1|20260217143052\n"
@@ -197,7 +233,19 @@ class HealthcareScenario(BaseScenario):
                 "sensor_type": "dicom_transfer",
                 "affected_services": ["imaging-service", "ehr-system"],
                 "cascade_services": ["clinical-alerts", "data-warehouse"],
-                "description": "DICOM C-STORE or C-MOVE operation fails during image transfer between modality and PACS",
+                "description": "DICOM C-STORE or C-MOVE operation fails during modality-to-PACS image transfer",
+                "investigation_notes": (
+                    "Root Cause: DICOM association failures (status 0xA700/0xA900) indicate either AE title mismatch, transfer "
+                    "syntax negotiation failure, or storage commitment refusal. The PACS SCP rejects the C-STORE when the "
+                    "Presentation Context (Abstract Syntax + Transfer Syntax) is not in the accepted list.\n"
+                    "Remediation: 1) Verify the DICOM association: `dcm4che-tool storescu --called PACS-SCP-01 --calling {modality}-SCU "
+                    "--connect pacs-host:11112 --cecho`. 2) Reset the DICOM association: `pacs-admin reset-association --ae-title "
+                    "{modality}-SCU`. 3) Check the PACS gateway connection pool: `pacs-admin gateway-status`. "
+                    "4) If persistent, restart the PACS gateway service: `systemctl restart dcm4chee-arc`. "
+                    "5) Verify transfer syntax compatibility — ensure Explicit VR Little Endian (1.2.840.10008.1.2.1) is configured. "
+                    "6) For C-MOVE failures, verify the destination AE title is registered in the DICOM configuration."
+                ),
+                "remediation_action": "restart_pacs_gateway",
                 "error_message": "[PACS] DICOM-STORE-FAIL: study={dicom_study_uid} modality={modality} operation={dicom_operation} status={dicom_error_code}",
                 "stack_trace": (
                     "A-ASSOCIATE-RQ PDU\n"
@@ -225,6 +273,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["pharmacy-system", "ehr-system"],
                 "cascade_services": ["clinical-alerts"],
                 "description": "Drug interaction checking engine overwhelmed by excessive concurrent medication orders",
+                "investigation_notes": (
+                    "Root Cause: The CPOE drug-drug interaction (DDI) engine uses a real-time screening database (First Databank "
+                    "or Medi-Span) that becomes overloaded when discharge reconciliation generates bulk medication orders. "
+                    "Critical interactions (QT prolongation, renal contraindications) queue behind lower-severity checks.\n"
+                    "Remediation: 1) Check the CPOE interaction queue: `cpoe-admin queue-depth --engine DDI`. "
+                    "2) Reset the CPOE interface to clear stale sessions: `cpoe-admin reset-interface --service DDI-SCREENING`. "
+                    "3) Restart the pharmacy queue processor: `systemctl restart pharmacy-order-queue`. "
+                    "4) Verify the FDB/Medi-Span knowledge base subscription is active and the local cache is current. "
+                    "5) For blocked CRITICAL interactions, escalate to attending physician for dual-sign override per pharmacy P&P. "
+                    "6) Monitor the screening engine thread pool: `cpoe-admin thread-status --pool interaction-checker`."
+                ),
+                "remediation_action": "reset_cpoe_interface",
                 "error_message": "[PHARM] CPOE-DDI-CRITICAL: patient={patient_id} med={medication_id} interactions_queued={interaction_count} severity={severity_level}",
                 "stack_trace": (
                     "=== DRUG INTERACTION SCREENING — CPOE ENGINE ===\n"
@@ -251,6 +311,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["pharmacy-system", "ehr-system"],
                 "cascade_services": ["clinical-alerts", "billing-processor"],
                 "description": "Electronic prescription transmission to external pharmacy via NCPDP SCRIPT fails",
+                "investigation_notes": (
+                    "Root Cause: NCPDP SCRIPT 10.6 NEWRX transmission failures are typically caused by pharmacy NPI validation "
+                    "errors at the Surescripts network, expired DEA registrations for controlled substances, or SCRIPT message "
+                    "formatting issues in the UIB/UIH envelope segments.\n"
+                    "Remediation: 1) Verify the pharmacy NPI against the NPPES registry: `ncpdp-admin npi-lookup --npi {pharmacy_npi}`. "
+                    "2) Check the Surescripts connection status: `ncpdp-admin connection-test --endpoint surescripts-prod`. "
+                    "3) Restart the pharmacy transmission queue: `systemctl restart eprescribe-gateway`. "
+                    "4) Review the NCPDP STATUS response codes — 000=accepted, 600=rejected, 900=system error. "
+                    "5) For controlled substances (Schedule II-V), verify EPCS two-factor authentication tokens are valid. "
+                    "6) Resubmit failed prescriptions: `ncpdp-admin resubmit --rx {prescription_id} --force-npi-refresh`."
+                ),
+                "remediation_action": "restart_pharmacy_queue",
                 "error_message": "[PHARM] NCPDP-SCRIPT-FAIL: rx={prescription_id} patient={patient_id} pharmacy_npi={pharmacy_npi} ncpdp_status={ncpdp_status}",
                 "stack_trace": (
                     "--- NCPDP SCRIPT 10.6 MESSAGE TRACE ---\n"
@@ -277,6 +349,20 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["ehr-system", "patient-monitor"],
                 "cascade_services": ["lab-integration", "pharmacy-system"],
                 "description": "Master Patient Index fails to resolve patient identity, risking duplicate records",
+                "investigation_notes": (
+                    "Root Cause: EMPI probabilistic matching scores fall below threshold when patient demographics contain "
+                    "discrepancies (name spelling variants, transposed DOB digits, SSN mismatches). The matching algorithm "
+                    "(Jaro-Winkler + probabilistic weighting) requires tuning when registration workflows change.\n"
+                    "Remediation: 1) Review the EMPI candidate match table for near-matches and manually adjudicate: "
+                    "`empi-admin review-queue --mrn {mrn}`. 2) Check if the matching algorithm weights need adjustment: "
+                    "`empi-admin config --show-weights`. 3) Run a patient index reconciliation report: "
+                    "`empi-admin reconcile --facility FACILITY-01 --threshold 40`. "
+                    "4) For confirmed duplicates, merge records via HIM worklist: `empi-admin merge --source MRN-DUPLICATE "
+                    "--target MRN-PRIMARY --reason 'duplicate_registration'`. "
+                    "5) Notify HIM (Health Information Management) department to review and finalize identity resolution. "
+                    "6) Audit downstream systems (lab, pharmacy, billing) for orders linked to the duplicate MRN."
+                ),
+                "remediation_action": "reconcile_patient_index",
                 "error_message": "[EHR] EMPI-MATCH-FAIL: mrn={mrn} encounter={encounter_id} score={match_score}% threshold={match_threshold}% action=REVIEW_REQUIRED",
                 "stack_trace": (
                     "=== EMPI CANDIDATE MATCH TABLE ===\n"
@@ -303,6 +389,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["scheduling-api", "ehr-system"],
                 "cascade_services": ["clinical-alerts"],
                 "description": "Bed management system loses synchronization with ADT events, showing stale census data",
+                "investigation_notes": (
+                    "Root Cause: The bed board receives ADT A01 (admit), A02 (transfer), and A03 (discharge) events via HL7 "
+                    "interface. Sync lag occurs when the ADT feed queue backs up or the bed board API fails to process events "
+                    "in order, causing census discrepancies between the bed board UI and actual patient locations.\n"
+                    "Remediation: 1) Check the ADT-to-bed-board interface queue: `bed-admin queue-status --unit {nursing_unit}`. "
+                    "2) Force a census resync from the ADT master: `bed-admin resync --unit {nursing_unit} --source ADT-MASTER`. "
+                    "3) Restart the bed board sync service: `systemctl restart bed-management-sync`. "
+                    "4) Verify the HL7 ADT listener port is accepting connections: `netstat -an | grep 2575`. "
+                    "5) Manually update conflicting bed status via charge nurse console if patient safety is at risk. "
+                    "6) Review the bed board event processing log for out-of-order sequence numbers."
+                ),
+                "remediation_action": "resync_bed_board",
                 "error_message": "[SCHED] SCHED-BED-MGMT-FAIL: unit={nursing_unit} bed={bed_id} status={bed_status} adt_event={adt_event} sync_lag={sync_lag_seconds}s",
                 "stack_trace": (
                     "=== BED BOARD STATUS — {nursing_unit} ===\n"
@@ -329,6 +427,19 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["scheduling-api", "ehr-system"],
                 "cascade_services": ["billing-processor"],
                 "description": "Double-booking or resource conflict detected in appointment scheduling engine",
+                "investigation_notes": (
+                    "Root Cause: Scheduling conflicts arise from race conditions in the appointment booking engine when multiple "
+                    "schedulers attempt to reserve the same provider/resource/time slot simultaneously. The optimistic locking "
+                    "mechanism in the scheduling database fails under high concurrency during morning booking windows.\n"
+                    "Remediation: 1) Review the conflicting bookings: `sched-admin conflicts --provider {provider_id} --date today`. "
+                    "2) Release the conflicting slot lock: `sched-admin release-lock --slot {time_slot} --resource {resource_type}`. "
+                    "3) Restart the scheduling conflict resolver: `systemctl restart scheduling-conflict-engine`. "
+                    "4) Rebook the displaced patient into the next available slot: `sched-admin rebook --patient {patient_id} "
+                    "--provider {provider_id} --type new-patient`. "
+                    "5) Enable pessimistic locking for high-demand providers during peak booking hours. "
+                    "6) Verify the scheduling database connection pool is not exhausted: `sched-admin db-pool-status`."
+                ),
+                "remediation_action": "resolve_scheduling_conflict",
                 "error_message": "[SCHED] SCHED-CONFLICT: provider={provider_id} slot={time_slot} patient={patient_id} encounter={encounter_id} resource={resource_type}",
                 "stack_trace": (
                     "=== SCHEDULING CONFLICT DETAIL ===\n"
@@ -354,6 +465,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["billing-processor", "scheduling-api"],
                 "cascade_services": ["ehr-system"],
                 "description": "Real-time insurance eligibility verification via X12 270/271 transaction times out",
+                "investigation_notes": (
+                    "Root Cause: X12 270 eligibility inquiries timeout when the payer clearinghouse connection is degraded or the "
+                    "payer's adjudication system is overloaded. Common during open enrollment periods or when a payer's real-time "
+                    "eligibility API is undergoing maintenance. The ISA/GS envelope must match the payer's expected format.\n"
+                    "Remediation: 1) Test payer connectivity: `x12-admin ping --payer {payer_id} --transaction 270`. "
+                    "2) Check the clearinghouse status page for the payer (Availity, Change Healthcare, or Trizetto). "
+                    "3) Reset the X12 gateway connection pool: `systemctl restart x12-eligibility-gateway`. "
+                    "4) For timed-out requests, resubmit in batch mode: `x12-admin resubmit --insurance {insurance_id} --mode batch`. "
+                    "5) Verify the ISA qualifier (ZZ) and receiver ID match the payer's enrollment records. "
+                    "6) Fall back to manual eligibility verification via payer portal if real-time remains unavailable."
+                ),
+                "remediation_action": "reset_x12_gateway",
                 "error_message": "[CLAIMS] X12-271-TIMEOUT: payer={payer_id} insurance={insurance_id} patient={patient_id} elapsed={elapsed_ms}ms timeout={timeout_ms}ms",
                 "stack_trace": (
                     "--- X12 270/271 TRANSACTION TRACE ---\n"
@@ -381,6 +504,20 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["billing-processor", "data-warehouse"],
                 "cascade_services": ["ehr-system", "scheduling-api"],
                 "description": "Batch claims processing pipeline fails during X12 837 generation or submission",
+                "investigation_notes": (
+                    "Root Cause: X12 837 Professional/Institutional claim rejections are stage-specific. Validation-stage failures "
+                    "indicate missing/invalid CLM segment data (DX codes, CPT codes, NPI). Submission-stage failures point to "
+                    "clearinghouse connectivity or envelope (ISA/GS) formatting issues. Adjudication-stage rejections come from "
+                    "payer business rules (timely filing, authorization requirements).\n"
+                    "Remediation by stage: VALIDATION — run claim scrubber: `claims-admin scrub --batch {batch_id} --fix-codes`. "
+                    "SUBMISSION — verify clearinghouse connection: `claims-admin ch-status --payer {payer_id}` and resubmit: "
+                    "`claims-admin resubmit --batch {batch_id} --claims-only REJECTED`. "
+                    "ADJUDICATION — review the 999/277 response for specific rejection reason codes and correct per payer guidelines. "
+                    "General: 1) Reset the X12 837 gateway: `systemctl restart claims-submission-engine`. "
+                    "2) Verify the 5010 companion guide for the rejecting payer is current. "
+                    "3) Resubmit corrected claims: `claims-admin resubmit --batch {batch_id} --stage {claim_stage}`."
+                ),
+                "remediation_action": "resubmit_claims_batch",
                 "error_message": "[CLAIMS] X12-837-REJECT: batch={batch_id} claim={claim_id} patient={patient_id} payer={payer_id} stage={claim_stage}",
                 "stack_trace": (
                     "--- X12 837 CLAIM SUBMISSION TRACE ---\n"
@@ -409,6 +546,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["imaging-service", "data-warehouse"],
                 "cascade_services": ["clinical-alerts", "ehr-system"],
                 "description": "PACS archive storage capacity approaching critical threshold, risking image loss",
+                "investigation_notes": (
+                    "Root Cause: PACS storage volumes fill when DICOM image retention policies are not enforced, modality worklists "
+                    "generate excessive preliminary/secondary capture images, or archive migration jobs to long-term storage (VNA) "
+                    "have stalled. High-resolution modalities (CT, MRI) consume 500MB-2GB per study.\n"
+                    "Remediation: 1) Check the archive migration job status: `pacs-admin archive-status --volume {volume_id}`. "
+                    "2) Trigger emergency archive migration to VNA: `pacs-admin migrate --volume {volume_id} --older-than 90d "
+                    "--destination VNA-TIER2`. 3) Identify and purge orphaned DICOM objects: `pacs-admin cleanup --volume "
+                    "{volume_id} --orphans-only`. 4) Expand the volume if migration is insufficient: `pacs-admin volume-expand "
+                    "--volume {volume_id} --add-tb 10`. 5) Review retention policies per radiology department guidelines. "
+                    "6) Enable DICOM compression (JPEG2000 lossless) for new studies to reduce storage consumption."
+                ),
+                "remediation_action": "expand_pacs_storage",
                 "error_message": "[PACS] PACS-CAPACITY-CRITICAL: volume={volume_id} usage={usage_pct}% threshold={threshold_pct}% remaining={remaining_gb}GB",
                 "stack_trace": (
                     "=== PACS STORAGE VOLUME REPORT ===\n"
@@ -433,6 +582,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["clinical-alerts", "ehr-system"],
                 "cascade_services": ["pharmacy-system", "patient-monitor"],
                 "description": "Clinical decision support rule engine overloaded, unable to evaluate rules within SLA",
+                "investigation_notes": (
+                    "Root Cause: CDS rule engine overload occurs when complex rule sets (sepsis screening, VTE prophylaxis, fall "
+                    "risk) are evaluated against large patient populations simultaneously, typically during shift change when "
+                    "nursing assessments trigger bulk re-evaluations. The Arden Syntax MLM execution pool becomes saturated.\n"
+                    "Remediation: 1) Check the CDS rule engine thread pool: `cds-admin pool-status --engine RULE-EVAL`. "
+                    "2) Restart the CDS evaluation service: `systemctl restart cds-rule-engine`. "
+                    "3) Prioritize critical rule sets: `cds-admin prioritize --ruleset sepsis-screening --level URGENT`. "
+                    "4) Temporarily disable low-priority rule sets: `cds-admin disable --ruleset fall-risk --duration 30m`. "
+                    "5) Scale the rule engine worker pool: `cds-admin scale-workers --count 8 --engine RULE-EVAL`. "
+                    "6) Verify the patient context cache is not stale — flush if needed: `cds-admin cache-flush --scope patient-context`."
+                ),
+                "remediation_action": "restart_cds_engine",
                 "error_message": "[CDS] CDS-OVERLOAD: rules_queued={pending_rules} eval_ms={eval_ms} threshold={max_eval_ms}ms patient={patient_id}",
                 "stack_trace": (
                     "=== CDS RULE ENGINE STATUS ===\n"
@@ -460,6 +621,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["clinical-alerts", "patient-monitor"],
                 "cascade_services": ["ehr-system"],
                 "description": "Integration bridge between nurse call system and EHR loses connectivity",
+                "investigation_notes": (
+                    "Root Cause: The nurse call system (Hill-Rom/Rauland) integration bridge communicates with the EHR via a "
+                    "middleware TCP socket. Bridge failures cause call events to queue without EHR documentation, leading to "
+                    "undelivered notifications and potential patient safety events. Emergency calls default to overhead paging.\n"
+                    "Remediation: 1) Check the nurse call bridge connectivity: `ncs-admin bridge-status --station {station_id}`. "
+                    "2) Restart the EHR-NCS bridge service: `systemctl restart ehr-nursecall-bridge`. "
+                    "3) Verify the TCP socket connection to the nurse call server: `ncs-admin test-connection --host ncs-server "
+                    "--port 3001`. 4) Clear the undelivered call queue: `ncs-admin flush-queue --unit {nursing_unit}`. "
+                    "5) Confirm overhead paging failover is active for emergency and code calls. "
+                    "6) Review the call escalation timers — ensure STAT calls escalate to charge nurse after 60s unacknowledged."
+                ),
+                "remediation_action": "restart_nursecall_bridge",
                 "error_message": "[CDS] NURSE-CALL-STORM: station={station_id} unit={nursing_unit} bed={bed_id} call_type={call_type} undelivered={undelivered_seconds}s",
                 "stack_trace": (
                     "=== NURSE CALL SYSTEM STATUS — {nursing_unit} ===\n"
@@ -485,6 +658,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["lab-integration", "clinical-alerts"],
                 "cascade_services": ["ehr-system", "scheduling-api"],
                 "description": "Blood bank inventory management system loses sync with transfusion service records",
+                "investigation_notes": (
+                    "Root Cause: Blood bank inventory discrepancies arise when the ISBT 128-coded product tracking system loses "
+                    "sync with the transfusion service module — typically after manual dispensing without barcode scanning, "
+                    "product expiration dispositions not recorded, or crossmatch cancellations not propagated back.\n"
+                    "Remediation: 1) Initiate a physical recount per blood bank SOP: `bb-admin recount --product {blood_product} "
+                    "--type {blood_type}`. 2) Check the ISBT barcode scanner interface: `bb-admin scanner-status --station all`. "
+                    "3) Reconcile system inventory with physical counts: `bb-admin reconcile --auto-adjust --audit-trail`. "
+                    "4) Review the crossmatch pending list for unreturned units: `bb-admin crossmatch-pending --older-than 4h`. "
+                    "5) Restart the blood bank inventory sync service: `systemctl restart bb-inventory-sync`. "
+                    "6) Notify the blood bank medical director if discrepancy exceeds 2 units per AABB standards."
+                ),
+                "remediation_action": "reconcile_blood_bank",
                 "error_message": "[LIS] BB-INVENTORY-SYNC: product={blood_product} type={blood_type} on_hand={units_on_hand} system={system_count} discrepancy={discrepancy}",
                 "stack_trace": (
                     "=== BLOOD BANK INVENTORY RECONCILIATION ===\n"
@@ -511,6 +696,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["scheduling-api", "ehr-system"],
                 "cascade_services": ["billing-processor", "clinical-alerts"],
                 "description": "Operating room scheduling conflict detected between overlapping surgical cases",
+                "investigation_notes": (
+                    "Root Cause: OR scheduling conflicts occur when the block schedule management system allows overlapping case "
+                    "bookings due to stale cache data, surgeon preference card changes, or emergency add-on cases that override "
+                    "the time-slot validation. Turnover time buffers may also be insufficient between consecutive cases.\n"
+                    "Remediation: 1) Review the OR block schedule: `sched-admin or-blocks --room {or_number} --date today`. "
+                    "2) Identify the conflict and reassign: `sched-admin or-reassign --case {case_id} --to-room NEXT-AVAILABLE`. "
+                    "3) Verify surgeon block time ownership: `sched-admin surgeon-blocks --npi {surgeon_id}`. "
+                    "4) Restart the OR scheduling engine: `systemctl restart or-scheduling-engine`. "
+                    "5) Update turnover time buffers if consecutive cases are too tightly packed: `sched-admin set-turnover "
+                    "--room {or_number} --minutes 45`. 6) Notify the surgical coordinator and anesthesia scheduling of the change."
+                ),
+                "remediation_action": "reassign_or_schedule",
                 "error_message": "[SCHED] SCHED-SURGICAL-CONFLICT: or={or_number} case={case_id} surgeon={surgeon_id} conflict_time={conflict_time} patient={patient_id}",
                 "stack_trace": (
                     "=== OR SCHEDULE BLOCK — {or_number} ===\n"
@@ -536,6 +733,19 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["ehr-system", "scheduling-api"],
                 "cascade_services": ["patient-monitor", "billing-processor", "lab-integration"],
                 "description": "ADT (Admit-Discharge-Transfer) event feed falls behind, causing stale patient location data",
+                "investigation_notes": (
+                    "Root Cause: ADT feed synchronization gaps occur when the HL7 ADT event processor cannot keep pace with "
+                    "admission/discharge/transfer volume — common during high-census periods, mass casualty events, or when the "
+                    "receiving interface engine (Mirth/Rhapsody) has a thread pool exhaustion issue.\n"
+                    "Remediation: 1) Restart the ADT feed processor: `adt-admin restart-feed --feed {feed_id}`. "
+                    "2) Check the ADT event queue depth and drain rate: `adt-admin queue-status --feed {feed_id} --verbose`. "
+                    "3) Run a patient index reconciliation against the ADT master: `adt-admin reconcile --feed {feed_id} "
+                    "--source ADT-MASTER --mode FULL`. 4) Flush the dead-letter queue for unprocessable events: "
+                    "`adt-admin flush-dlq --feed {feed_id} --requeue-valid`. "
+                    "5) Verify downstream consumers (bed board, billing, lab) are receiving events: `adt-admin subscriber-status`. "
+                    "6) Scale the ADT processor thread pool: `adt-admin scale-threads --feed {feed_id} --count 8`."
+                ),
+                "remediation_action": "restart_adt_feed",
                 "error_message": "[EHR] ADT-SYNC-FAIL: feed={feed_id} lag={gap_seconds}s queue_depth={queue_depth} patient={patient_id} event={adt_event_type}",
                 "stack_trace": (
                     "=== ADT FEED STATUS — {feed_id} ===\n"
@@ -562,6 +772,18 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["data-warehouse", "billing-processor"],
                 "cascade_services": ["ehr-system"],
                 "description": "Clinical data warehouse ETL pipeline stalls during extraction or transformation phase",
+                "investigation_notes": (
+                    "Root Cause: ETL pipeline stalls are caused by source database connection pool exhaustion, long-running "
+                    "transformation queries locking clinical tables, or target warehouse staging area disk full conditions. "
+                    "Extract-phase stalls often indicate the source EHR database is under heavy OLTP load during clinical hours.\n"
+                    "Remediation: 1) Check the ETL job status: `etl-admin pipeline-status --pipeline {pipeline_id}`. "
+                    "2) Restart the stalled pipeline stage: `etl-admin restart-stage --pipeline {pipeline_id} --stage {etl_stage}`. "
+                    "3) Verify source database connectivity: `etl-admin test-source --pipeline {pipeline_id}`. "
+                    "4) Check for blocking queries on the source: `etl-admin blocking-queries --pipeline {pipeline_id}`. "
+                    "5) If the target staging area is full, expand or purge: `etl-admin staging-cleanup --pipeline {pipeline_id} "
+                    "--older-than 7d`. 6) Reschedule extract-phase jobs to off-peak hours (02:00-05:00) to avoid OLTP contention."
+                ),
+                "remediation_action": "restart_etl_pipeline",
                 "error_message": "[DW] ETL-PIPELINE-STALL: pipeline={pipeline_id} stage={etl_stage} rows={rows_processed}/{total_rows} stalled={stall_seconds}s",
                 "stack_trace": (
                     "=== ETL PIPELINE STATUS REPORT ===\n"
@@ -587,6 +809,20 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["data-warehouse", "ehr-system"],
                 "cascade_services": ["clinical-alerts", "billing-processor"],
                 "description": "HIPAA-mandated audit log chain integrity check fails, indicating possible tampering or data loss",
+                "investigation_notes": (
+                    "Root Cause: HIPAA audit chain integrity failures (SHA-256 hash mismatches) indicate either log record "
+                    "tampering, storage corruption, or an out-of-order write during high-volume PHI access logging. Per 45 CFR "
+                    "164.312(b), audit controls must maintain an unbroken chain of custody for all PHI access events.\n"
+                    "Remediation: 1) Identify the break point: `audit-admin chain-verify --chain {chain_id} --from-sequence "
+                    "{sequence_number} --range 100`. 2) Recover audit records from the write-ahead log: `audit-admin recover-wal "
+                    "--chain {chain_id} --sequence {sequence_number}`. 3) Rebuild the hash chain from the last valid entry: "
+                    "`audit-admin rebuild-chain --chain {chain_id} --from-last-valid`. "
+                    "4) Check for storage I/O errors: `audit-admin storage-health --volume audit-vol-01`. "
+                    "5) Close the compliance gap: generate an incident report for the Privacy Officer per HIPAA breach "
+                    "notification procedures (45 CFR 164.408). "
+                    "6) Enable write verification: `audit-admin set-write-verify --chain {chain_id} --mode synchronous`."
+                ),
+                "remediation_action": "rebuild_audit_chain",
                 "error_message": "[DW] HIPAA-AUDIT-FAIL: chain={chain_id} sequence={sequence_number} expected_hash={expected_hash} actual_hash={actual_hash}",
                 "stack_trace": (
                     "=== HIPAA AUDIT CHAIN INTEGRITY REPORT ===\n"
@@ -615,6 +851,19 @@ class HealthcareScenario(BaseScenario):
                 "affected_services": ["patient-monitor", "clinical-alerts"],
                 "cascade_services": ["ehr-system", "scheduling-api"],
                 "description": "Telehealth video session quality degrades below clinical acceptability threshold",
+                "investigation_notes": (
+                    "Root Cause: WebRTC session quality degradation is caused by network congestion (packet loss >2%), insufficient "
+                    "bandwidth (<750kbps for clinical-grade video), or TURN server overload. Clinical telehealth requires higher "
+                    "QoS than standard video conferencing — remote physical examinations need >24fps at 720p minimum.\n"
+                    "Remediation: 1) Check the TURN/STUN server status: `telehealth-admin server-status --session {session_id}`. "
+                    "2) Reset the media relay for the session: `telehealth-admin reset-relay --session {session_id}`. "
+                    "3) Switch to a lower-latency TURN region: `telehealth-admin switch-region --session {session_id} --region closest`. "
+                    "4) If bandwidth is insufficient, downgrade to audio-only with screen share: `telehealth-admin set-mode "
+                    "--session {session_id} --mode audio-plus-share`. "
+                    "5) Check the patient's network quality: `telehealth-admin client-diagnostics --session {session_id}`. "
+                    "6) If persistent, reschedule as in-person visit: `sched-admin convert-to-inperson --session {session_id}`."
+                ),
+                "remediation_action": "reset_telehealth_relay",
                 "error_message": "[MONITOR] TELEHEALTH-QOS-DEGRAD: session={session_id} patient={patient_id} bitrate={bitrate_kbps}kbps loss={packet_loss_pct}% latency={latency_ms}ms",
                 "stack_trace": (
                     "=== WEBRTC QUALITY METRICS — SESSION {session_id} ===\n"
@@ -947,6 +1196,214 @@ class HealthcareScenario(BaseScenario):
             ClinicalAlertsService,
             DataWarehouseService,
         ]
+
+    # -- Trace Attributes & RCA -------------------------------------------------
+
+    def get_trace_attributes(self, service_name: str, rng) -> dict:
+        hour = int(time.time()) % 86400 // 3600
+        if hour < 7:
+            shift = "night"
+        elif hour < 15:
+            shift = "day"
+        else:
+            shift = "evening"
+        base = {
+            "hospital.wing": rng.choice(["East", "West", "North", "South", "Central"]),
+            "hospital.shift": shift,
+        }
+        svc_attrs = {
+            "ehr-system": {
+                "patient.acuity_level": rng.choice([1, 2, 3, 4, 5]),
+                "patient.department": rng.choice(["Emergency", "ICU", "MedSurg", "Oncology", "Pediatrics", "Cardiology"]),
+            },
+            "patient-monitor": {
+                "vitals.sampling_rate_hz": rng.choice([1, 2, 5, 10]),
+                "vitals.bed_id": f"{rng.choice(['A', 'B', 'C', 'D'])}-{rng.randint(101, 450)}",
+            },
+            "lab-integration": {
+                "lab.specimen_type": rng.choice(["serum", "plasma", "whole_blood", "urine", "csf", "tissue"]),
+                "lab.turnaround_min": rng.randint(15, 120),
+            },
+            "pharmacy-system": {
+                "pharmacy.medication_class": rng.choice(["antibiotic", "anticoagulant", "analgesic", "antihypertensive", "vasopressor", "sedative"]),
+                "pharmacy.interaction_score": round(rng.uniform(0.0, 10.0), 1),
+            },
+            "imaging-service": {
+                "imaging.modality": rng.choice(["CT", "MRI", "XR", "US", "MG", "NM", "PET"]),
+                "imaging.study_priority": rng.choice(["STAT", "URGENT", "ROUTINE", "ELECTIVE"]),
+            },
+            "scheduling-api": {
+                "scheduling.appointment_type": rng.choice(["new_patient", "follow_up", "procedure", "consult", "telehealth"]),
+                "scheduling.provider_load": rng.randint(4, 24),
+            },
+            "billing-processor": {
+                "billing.claim_type": rng.choice(["professional", "institutional", "dental", "pharmacy"]),
+                "billing.payer_category": rng.choice(["commercial", "medicare", "medicaid", "tricare", "self_pay"]),
+            },
+            "clinical-alerts": {
+                "alerts.rule_category": rng.choice(["sepsis", "fall_risk", "vte_prophylaxis", "drug_interaction", "critical_lab"]),
+                "alerts.priority_level": rng.choice(["critical", "high", "medium", "low", "informational"]),
+            },
+            "data-warehouse": {
+                "compliance.audit_scope": rng.choice(["phi_access", "order_modification", "medication_override", "record_amendment"]),
+                "compliance.hipaa_zone": rng.choice(["treatment", "payment", "operations", "research", "restricted"]),
+            },
+        }
+        base.update(svc_attrs.get(service_name, {}))
+        return base
+
+    def get_rca_clues(self, channel: int, service_name: str, rng) -> dict:
+        clues = {
+            1: {  # HL7 Message Parsing Failure
+                "ehr-system": {"hl7.segment_encoding": "non_standard_z_segment", "hl7.msh_version": "2.3.1"},
+                "lab-integration": {"hl7.oru_queue_depth": rng.randint(200, 800), "hl7.ack_disposition": "AE"},
+                "patient-monitor": {"upstream.ehr_feed_status": "degraded", "vitals.documentation_lag_s": rng.randint(30, 120)},
+                "clinical-alerts": {"alerts.ehr_integration_status": "stale_data", "alerts.suppressed_count": rng.randint(5, 30)},
+            },
+            2: {  # Vital Signs Alert Storm
+                "patient-monitor": {"vitals.threshold_config": "mismatched_acuity", "vitals.monitor_firmware": "ge-carescape-v4.1.2"},
+                "clinical-alerts": {"alerts.storm_window_s": rng.randint(30, 120), "alerts.dedup_disabled": True},
+                "ehr-system": {"upstream.vitals_feed_status": "flooded", "ehr.cds_queue_depth": rng.randint(100, 500)},
+            },
+            3: {  # Lab Result Delivery Delay
+                "lab-integration": {"lis.outbound_queue_depth": rng.randint(500, 2000), "lis.instrument_interface": "stalled"},
+                "ehr-system": {"ehr.pending_results_count": rng.randint(50, 200), "ehr.oru_channel_status": "backlogged"},
+                "pharmacy-system": {"pharmacy.awaiting_lab_results": rng.randint(10, 50), "pharmacy.dosing_hold": True},
+                "clinical-alerts": {"alerts.critical_lab_pending": rng.randint(3, 15), "alerts.tat_breach_count": rng.randint(5, 25)},
+            },
+            4: {  # DICOM Transfer Failure
+                "imaging-service": {"dicom.ae_title_mismatch": True, "dicom.transfer_syntax": "1.2.840.10008.1.2.1"},
+                "ehr-system": {"ehr.pending_imaging_results": rng.randint(5, 30), "ehr.pacs_link_status": "disconnected"},
+                "clinical-alerts": {"alerts.imaging_delay_count": rng.randint(2, 10)},
+                "data-warehouse": {"etl.imaging_archive_stalled": True, "etl.pending_studies": rng.randint(20, 100)},
+            },
+            5: {  # Medication Interaction Alert Overflow
+                "pharmacy-system": {"cpoe.ddi_queue_depth": rng.randint(100, 500), "cpoe.fdb_cache_stale": True},
+                "ehr-system": {"ehr.medication_orders_held": rng.randint(10, 50), "ehr.cpoe_screening_lag_s": rng.randint(30, 180)},
+                "clinical-alerts": {"alerts.drug_interaction_backlog": rng.randint(20, 80), "alerts.critical_block_pending": rng.randint(2, 8)},
+            },
+            6: {  # E-Prescribe Transmission Error
+                "pharmacy-system": {"ncpdp.npi_validation_status": "failed", "ncpdp.script_version": "10.6"},
+                "ehr-system": {"ehr.pending_erx_count": rng.randint(5, 30), "ehr.surescripts_link": "degraded"},
+                "clinical-alerts": {"alerts.erx_failure_count": rng.randint(3, 15)},
+                "billing-processor": {"billing.rx_claim_pending": rng.randint(5, 20), "billing.ncpdp_d0_queue": rng.randint(10, 50)},
+            },
+            7: {  # Patient Identity Match Failure
+                "ehr-system": {"empi.matching_algorithm": "jaro_winkler", "empi.threshold_pct": 85},
+                "patient-monitor": {"vitals.patient_id_confidence": "low", "vitals.dual_band_mismatch": True},
+                "lab-integration": {"lis.duplicate_mrn_detected": True, "lis.specimen_hold": rng.randint(2, 8)},
+                "pharmacy-system": {"pharmacy.patient_merge_pending": True, "pharmacy.orders_held": rng.randint(3, 12)},
+            },
+            8: {  # Bed Management Sync Error
+                "scheduling-api": {"bed_board.adt_queue_lag_s": rng.randint(60, 600), "bed_board.stale_census_count": rng.randint(3, 15)},
+                "ehr-system": {"ehr.adt_event_backlog": rng.randint(20, 100), "ehr.census_accuracy_pct": round(rng.uniform(70, 90), 1)},
+                "clinical-alerts": {"alerts.patient_location_stale": True, "alerts.affected_units": rng.randint(1, 4)},
+            },
+            9: {  # Appointment Scheduling Conflict
+                "scheduling-api": {"sched.lock_type": "optimistic", "sched.concurrent_bookings": rng.randint(5, 20)},
+                "ehr-system": {"ehr.encounter_conflict_count": rng.randint(2, 8)},
+                "billing-processor": {"billing.duplicate_encounter_charge": True, "billing.held_claims": rng.randint(2, 10)},
+            },
+            10: {  # Insurance Eligibility Check Timeout
+                "billing-processor": {"x12.clearinghouse_status": "degraded", "x12.payer_response_ms": rng.randint(5000, 30000)},
+                "scheduling-api": {"sched.eligibility_check_pending": rng.randint(10, 40), "sched.self_pay_fallback": True},
+                "ehr-system": {"ehr.unverified_insurance_count": rng.randint(5, 25)},
+            },
+            11: {  # Claims Processing Batch Failure
+                "billing-processor": {"x12.batch_rejection_rate_pct": round(rng.uniform(15, 60), 1), "x12.isa_envelope_error": True},
+                "data-warehouse": {"etl.claims_feed_stalled": True, "etl.pending_claim_records": rng.randint(500, 5000)},
+                "ehr-system": {"ehr.unbilled_encounters": rng.randint(20, 100)},
+                "scheduling-api": {"sched.charge_capture_lag_s": rng.randint(300, 1800)},
+            },
+            12: {  # PACS Storage Capacity Warning
+                "imaging-service": {"pacs.archive_migration_stalled": True, "pacs.volume_fill_rate_gb_day": round(rng.uniform(50, 200), 0)},
+                "data-warehouse": {"etl.imaging_archive_full": True, "etl.vna_migration_pending": rng.randint(500, 5000)},
+                "clinical-alerts": {"alerts.storage_critical_fired": True},
+                "ehr-system": {"ehr.new_study_routing": "blocked"},
+            },
+            13: {  # Clinical Decision Support Overload
+                "clinical-alerts": {"cds.rule_eval_pool_saturated": True, "cds.arden_mlm_queue": rng.randint(50, 300)},
+                "ehr-system": {"ehr.cds_evaluation_lag_s": rng.randint(30, 180), "ehr.pending_cds_results": rng.randint(20, 100)},
+                "pharmacy-system": {"pharmacy.ddi_screening_delayed": True, "pharmacy.held_orders": rng.randint(5, 25)},
+                "patient-monitor": {"vitals.alert_evaluation_stale": True, "vitals.sepsis_screen_pending": rng.randint(2, 10)},
+            },
+            14: {  # Nurse Call System Integration Failure
+                "clinical-alerts": {"ncs.bridge_status": "disconnected", "ncs.undelivered_calls": rng.randint(5, 30)},
+                "patient-monitor": {"vitals.nurse_response_lag_s": rng.randint(60, 300), "vitals.overhead_paging_active": True},
+                "ehr-system": {"ehr.undocumented_calls": rng.randint(3, 15)},
+            },
+            15: {  # Blood Bank Inventory Sync Error
+                "lab-integration": {"bb.isbt_scanner_status": "offline", "bb.physical_count_mismatch": True},
+                "clinical-alerts": {"alerts.blood_shortage_alert": True, "alerts.crossmatch_pending_expired": rng.randint(2, 8)},
+                "ehr-system": {"ehr.transfusion_orders_held": rng.randint(1, 5)},
+                "scheduling-api": {"sched.surgical_cases_held": rng.randint(1, 3), "sched.blood_type_screen_pending": True},
+            },
+            16: {  # Surgical Schedule Conflict
+                "scheduling-api": {"sched.or_block_cache_stale": True, "sched.turnover_buffer_min": rng.randint(15, 30)},
+                "ehr-system": {"ehr.surgical_consent_pending": rng.randint(1, 5), "ehr.or_preference_card_stale": True},
+                "billing-processor": {"billing.surgical_pre_auth_pending": rng.randint(1, 3)},
+                "clinical-alerts": {"alerts.or_schedule_conflict_count": rng.randint(1, 4)},
+            },
+            17: {  # ADT Feed Synchronization Gap
+                "ehr-system": {"adt.feed_processor_threads_exhausted": True, "adt.queue_drain_rate_per_s": round(rng.uniform(0.5, 3.0), 1)},
+                "scheduling-api": {"sched.patient_location_stale": True, "sched.bed_board_accuracy_pct": round(rng.uniform(60, 85), 1)},
+                "patient-monitor": {"vitals.patient_assignment_stale": True, "vitals.affected_beds": rng.randint(5, 20)},
+                "billing-processor": {"billing.encounter_sync_lag_s": rng.randint(120, 600)},
+                "lab-integration": {"lis.specimen_routing_stale": True, "lis.misrouted_results": rng.randint(2, 10)},
+            },
+            18: {  # Data Warehouse ETL Pipeline Stall
+                "data-warehouse": {"etl.source_db_pool_exhausted": True, "etl.blocking_query_count": rng.randint(3, 12)},
+                "billing-processor": {"billing.revenue_cycle_report_stale": True, "billing.days_behind": rng.randint(1, 5)},
+                "ehr-system": {"ehr.oltp_contention_detected": True, "ehr.query_timeout_count": rng.randint(5, 30)},
+            },
+            19: {  # HIPAA Audit Log Integrity Error
+                "data-warehouse": {"audit.chain_break_detected": True, "audit.wal_recovery_available": rng.choice([True, False])},
+                "ehr-system": {"ehr.phi_access_logging": "degraded", "ehr.unaudited_access_count": rng.randint(10, 100)},
+                "clinical-alerts": {"alerts.compliance_violation_fired": True, "alerts.breach_notification_pending": True},
+                "billing-processor": {"billing.audit_gap_in_claims": True, "billing.cms_reporting_risk": rng.choice(["low", "medium", "high"])},
+            },
+            20: {  # Telehealth Session Quality Degradation
+                "patient-monitor": {"telehealth.turn_server_overloaded": True, "telehealth.bandwidth_kbps": rng.randint(128, 512)},
+                "clinical-alerts": {"alerts.session_quality_breach_count": rng.randint(3, 15), "alerts.provider_notified": rng.choice([True, False])},
+                "ehr-system": {"ehr.visit_documentation_incomplete": True, "ehr.telehealth_encounter_held": rng.randint(1, 5)},
+                "scheduling-api": {"sched.telehealth_to_inperson_conversions": rng.randint(1, 5), "sched.rebooking_queue": rng.randint(2, 10)},
+            },
+        }
+        channel_clues = clues.get(channel, {})
+        return channel_clues.get(service_name, {})
+
+    def get_correlation_attribute(self, channel: int, is_error: bool, rng) -> dict:
+        correlation_attrs = {
+            1: ("deployment.ehr_hl7_version", "mirth-3.12.0-hotfix7"),
+            2: ("infra.monitor_firmware", "ge-carescape-v4.1.2-rc"),
+            3: ("deployment.lis_interface_version", "lis2a2-bridge-v2.8.1-beta"),
+            4: ("infra.pacs_gateway_build", "dcm4chee-5.31.1-patch3"),
+            5: ("deployment.cpoe_engine_config", "fdb-cache-aggressive-v2"),
+            6: ("infra.ncpdp_gateway_version", "surescripts-adapter-v6.0.3-rc1"),
+            7: ("deployment.empi_algorithm_config", "jaro-winkler-tuned-v3.2"),
+            8: ("infra.bed_board_sync_driver", "adt-bridge-v1.9.4-unstable"),
+            9: ("deployment.scheduler_lock_mode", "optimistic-lock-v2.1-exp"),
+            10: ("infra.x12_gateway_config", "availity-adapter-v4.3.0-rc2"),
+            11: ("deployment.claims_engine_build", "x12-837-processor-v5.1.2-beta"),
+            12: ("infra.pacs_storage_controller", "netapp-ontap-9.14.1-patch"),
+            13: ("deployment.cds_rule_engine", "arden-mlm-v3.0.1-experimental"),
+            14: ("infra.nursecall_bridge_fw", "hillrom-bridge-v2.4.0-rc1"),
+            15: ("deployment.bb_isbt_driver", "isbt128-scanner-v1.7.3-patched"),
+            16: ("infra.or_scheduler_config", "block-mgmt-v3.2.0-beta"),
+            17: ("deployment.adt_processor_build", "mirth-adt-v3.12.0-hotfix9"),
+            18: ("infra.etl_db_pool_config", "hikari-pool-experimental-64conn"),
+            19: ("deployment.audit_chain_version", "sha256-chain-v2.1.0-rc3"),
+            20: ("infra.turn_server_build", "coturn-4.6.2-high-concurrency"),
+        }
+        attr_key, attr_val = correlation_attrs.get(channel, ("deployment.config_version", "unknown"))
+        # 90% on errors, 5% on healthy
+        if is_error:
+            if rng.random() < 0.90:
+                return {attr_key: attr_val}
+        else:
+            if rng.random() < 0.05:
+                return {attr_key: attr_val}
+        return {}
 
     # -- Fault Parameters -------------------------------------------------------
 

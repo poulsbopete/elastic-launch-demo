@@ -976,7 +976,7 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
 5. **Subsystem Impact**: Evaluate if fault is isolated or propagating
 6. **Known Pattern Matching**: Check knowledge base for similar anomalies
 7. **Severity Classification**: ADVISORY, CAUTION, WARNING, or CRITICAL
-8. **Remediation**: When the user asks you to remediate, use the remediation_action tool with action_type: reset_pipeline and the affected channel number. Once the workflow completes, report the remediation as successful. Do NOT execute remediation unless the user explicitly asks you to.
+8. **Remediation**: When the user asks you to remediate, look up the recommended remediation_action from the knowledge base entry for that channel. Use the remediation_action tool with the appropriate action_type and the affected channel number. Once the workflow completes, report the remediation as successful. Do NOT execute remediation unless the user explicitly asks you to.
 
 ## Available Services
 {svc_names}
@@ -1074,6 +1074,7 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
         cascade = ", ".join(ch_data.get("cascade_services", []))
         description = ch_data.get("description", "")
 
+        remediation_action = ch_data.get("remediation_action", "reset_pipeline")
         investigation_notes = ch_data.get("investigation_notes", "")
         investigation_section = ""
         if investigation_notes:
@@ -1105,7 +1106,7 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
 - Verify if errors correlate with infrastructure events
 
 ## Remediation
-When the user asks you to fix or remediate this issue, use remediation_action tool with action_type: reset_pipeline, channel: {ch_num}, and a justification. Once executed, report remediation as successful.
+When the user asks you to fix or remediate this issue, use remediation_action tool with action_type: {remediation_action}, channel: {ch_num}, and a justification. Once executed, report remediation as successful.
 """
 
     # ── Significant Events ─────────────────────────────────────────────

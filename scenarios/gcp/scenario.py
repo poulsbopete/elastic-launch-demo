@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from typing import Any
 
 from scenarios.base import BaseScenario, CountdownConfig, UITheme
@@ -133,6 +134,17 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["vpc-network-manager", "cloud-load-balancer"],
                 "cascade_services": ["cloud-nat-gateway"],
                 "description": "VPC peering route table exceeding maximum advertised route limit",
+                "investigation_notes": (
+                    "Root cause: VPC peering has a hard limit of 250 advertised routes per peering connection. "
+                    "When custom routes are exported across peerings, aggregate routes from all subnets and "
+                    "static/dynamic routes count toward this limit. Check current usage with:\n"
+                    "  gcloud compute networks peerings list-routes <peering> --network=<vpc> --region=<region> --direction=INCOMING\n"
+                    "Remediation: Consolidate overlapping CIDR ranges using supernets, remove stale static routes, "
+                    "or switch to a Shared VPC model which avoids peering route limits. If immediate relief is needed, "
+                    "request a quota increase via gcloud compute project-info describe --project=<project> and file "
+                    "a support case referencing the PEER_ROUTES_PER_PEERING quota."
+                ),
+                "remediation_action": "reset_vpc_peering",
                 "error_message": (
                     'level=error ts={{timestamp}} caller=vpc_manager.go:312 '
                     'msg="VPC-ROUTE-LIMIT-EXCEEDED" project={gcp_project} '
@@ -163,6 +175,18 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["vpc-network-manager", "cloud-nat-gateway"],
                 "cascade_services": ["cloud-load-balancer", "cloud-cdn-service"],
                 "description": "VPC subnet running out of available IP addresses",
+                "investigation_notes": (
+                    "Root cause: Subnet CIDR range is nearly fully allocated. GKE nodes, Cloud NAT, and internal "
+                    "load balancers all consume IPs from the subnet pool. Identify top consumers with:\n"
+                    "  gcloud compute addresses list --filter='subnetwork:<subnet>' --project=<project>\n"
+                    "  gcloud compute instances list --filter='networkInterfaces.subnetwork:<subnet>'\n"
+                    "Remediation: Expand the subnet CIDR range in-place (GCP supports non-disruptive expansion):\n"
+                    "  gcloud compute networks subnets expand-ip-range <subnet> --region=<region> --prefix-length=<new_prefix>\n"
+                    "Alternatively, add secondary IP ranges for GKE pods/services, or migrate workloads to a new "
+                    "subnet with a larger CIDR block. Check for leaked IPs from terminated GKE pods or orphaned "
+                    "internal load balancer forwarding rules."
+                ),
+                "remediation_action": "reconfigure_firewall_rules",
                 "error_message": (
                     'level=error ts={{timestamp}} caller=subnet_monitor.go:189 '
                     'msg="VPC-SUBNET-IP-EXHAUSTION" project={gcp_project} '
@@ -189,6 +213,19 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["vpc-network-manager", "cloud-armor-waf"],
                 "cascade_services": ["cloud-interconnect"],
                 "description": "Conflicting VPC firewall rules causing unexpected traffic drops",
+                "investigation_notes": (
+                    "Root cause: GCP firewall rules use numeric priority where LOWER number = HIGHER priority. "
+                    "A DENY rule at priority 900 overrides an ALLOW rule at priority 1000, even if the ALLOW rule "
+                    "is more specific. This is the opposite of some on-prem firewalls. Diagnose with:\n"
+                    "  gcloud compute firewall-rules list --filter='network:<vpc>' --sort-by=priority --format='table(name,priority,direction,action,sourceRanges,targetTags)'\n"
+                    "  gcloud compute firewall-rules describe <rule_name> --format=json\n"
+                    "Check VPC Flow Logs for dropped traffic: Console > VPC Network > Firewall > Firewall Insights.\n"
+                    "Remediation: Adjust conflicting rule priorities so ALLOW rules have lower priority numbers than "
+                    "blanket DENY rules, or merge overlapping rules. Use Firewall Policy (hierarchical) for org-wide "
+                    "rules and VPC firewall rules for project-specific exceptions. Validate with:\n"
+                    "  gcloud compute firewall-rules update <rule> --priority=<new_priority>"
+                ),
+                "remediation_action": "reconfigure_firewall_rules",
                 "error_message": (
                     'level=error ts={{timestamp}} caller=fw_policy_engine.go:445 '
                     'msg="VPC-FIREWALL-RULE-CONFLICT" project={gcp_project} '
@@ -217,6 +254,20 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-armor-waf", "cloud-load-balancer"],
                 "cascade_services": ["vpc-network-manager", "cloud-cdn-service"],
                 "description": "Cloud Armor detecting and mitigating a volumetric DDoS attack",
+                "investigation_notes": (
+                    "Root cause: Volumetric DDoS attack targeting the backend service through the external load "
+                    "balancer. Cloud Armor Adaptive Protection has engaged but may not be fully mitigating. Check:\n"
+                    "  gcloud compute security-policies describe <policy> --format=json\n"
+                    "  gcloud compute security-policies rules list <policy>\n"
+                    "Review Adaptive Protection events in Console > Network Security > Cloud Armor > Events tab.\n"
+                    "Remediation: Enable Adaptive Protection auto-deploy if not active:\n"
+                    "  gcloud compute security-policies update <policy> --enable-layer7-ddos-defense\n"
+                    "Add rate-limiting rules targeting source regions: gcloud compute security-policies rules create "
+                    "<priority> --security-policy=<policy> --expression='origin.region_code==\"CN\"' --action=throttle "
+                    "--rate-limit-threshold-count=100 --rate-limit-threshold-interval-sec=60. "
+                    "Escalate to Google Cloud Support for L3/L4 scrubbing if volume exceeds 100Gbps."
+                ),
+                "remediation_action": "reset_security_policy",
                 "error_message": (
                     "[CloudArmor] ARMOR-DDOS-ALERT policy={armor_policy} "
                     "attack_type={ddos_attack_type} volume={ddos_volume_gbps}Gbps "
@@ -247,6 +298,20 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-armor-waf", "cloud-cdn-service"],
                 "cascade_services": ["cloud-load-balancer"],
                 "description": "Cloud Armor WAF rules generating excessive false positive blocks",
+                "investigation_notes": (
+                    "Root cause: Preconfigured WAF rule (OWASP ModSecurity CRS) is triggering on legitimate API "
+                    "traffic. Common false positives: JSON payloads matching SQLi patterns, base64-encoded data "
+                    "matching XSS signatures, GraphQL queries matching RCE patterns. Diagnose with:\n"
+                    "  gcloud compute security-policies rules describe <priority> --security-policy=<policy>\n"
+                    "  Console > Network Security > Cloud Armor > <policy> > Logs tab (filter by DENY action)\n"
+                    "Remediation: Adjust sensitivity level from 1 (high) to 2 or 3 for the specific rule:\n"
+                    "  gcloud compute security-policies rules update <priority> --security-policy=<policy> "
+                    "--expression='evaluatePreconfiguredWaf(\"sqli-v33-stable\", {\"sensitivity\": 2})'\n"
+                    "Or add path-based exception rules at a higher priority (lower number) to ALLOW known-good paths "
+                    "before the WAF rule evaluates. Monitor false positive rate via Cloud Monitoring metrics "
+                    "loadbalancing.googleapis.com/https/request_count filtered by security_policy_name."
+                ),
+                "remediation_action": "update_waf_rules",
                 "error_message": (
                     "[CloudArmor] ARMOR-FALSE-POSITIVE policy={armor_policy} "
                     "rule={waf_rule_id} blocked_requests={waf_blocked_count}/m "
@@ -276,6 +341,20 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-armor-waf", "vpc-network-manager"],
                 "cascade_services": ["cloud-load-balancer"],
                 "description": "Cloud Armor security policy failing to sync across backend services",
+                "investigation_notes": (
+                    "Root cause: Cloud Armor policy updates propagate asynchronously to all backend services. "
+                    "Propagation typically takes 60-90 seconds but can stall if backends are unhealthy or if there "
+                    "is a version conflict from concurrent policy edits. During sync gaps, stale backends enforce "
+                    "the previous policy version, creating an inconsistent security posture. Check sync status:\n"
+                    "  gcloud compute backend-services describe <backend> --global --format='value(securityPolicy)'\n"
+                    "  gcloud compute security-policies describe <policy> --format='value(fingerprint,creationTimestamp)'\n"
+                    "Remediation: Force a policy re-attachment to lagging backends:\n"
+                    "  gcloud compute backend-services update <backend> --global --security-policy=<policy>\n"
+                    "If version conflict persists, export the policy, delete and recreate it:\n"
+                    "  gcloud compute security-policies export <policy> --file-name=policy-backup.yaml\n"
+                    "Avoid concurrent policy edits; use --fingerprint flag to prevent race conditions."
+                ),
+                "remediation_action": "reset_security_policy",
                 "error_message": (
                     "[CloudArmor] ARMOR-POLICY-SYNC-FAILURE policy={armor_policy} "
                     "version={policy_version} backends_synced={backends_synced}/{backends_total} "
@@ -303,6 +382,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-nat-gateway", "vpc-network-manager"],
                 "cascade_services": ["cloud-load-balancer", "cloud-dns-resolver"],
                 "description": "Cloud NAT gateway running out of available source ports",
+                "investigation_notes": (
+                    "Root cause: Cloud NAT allocates a minimum of 64 source ports per VM by default. With high "
+                    "connection rates (e.g., GKE pods making many external API calls), the 64-port-per-VM minimum "
+                    "is quickly exhausted. Each unique (src_ip, src_port, dst_ip, dst_port, protocol) tuple "
+                    "consumes one port. Check current allocation:\n"
+                    "  gcloud compute routers nats describe <nat> --router=<router> --region=<region>\n"
+                    "  Console > Network Services > Cloud NAT > <gateway> > Monitoring tab (port utilization)\n"
+                    "Remediation: Increase minimum ports per VM:\n"
+                    "  gcloud compute routers nats update <nat> --router=<router> --region=<region> "
+                    "--min-ports-per-vm=2048\n"
+                    "Or enable Dynamic Port Allocation (DPA) for bursty workloads:\n"
+                    "  gcloud compute routers nats update <nat> --router=<router> --region=<region> "
+                    "--enable-dynamic-port-allocation --min-ports-per-vm=64 --max-ports-per-vm=65536\n"
+                    "Also add more NAT IPs to increase the total port pool."
+                ),
+                "remediation_action": "reset_nat_gateway",
                 "error_message": (
                     "cloudnat: NAT-PORT-EXHAUSTION gateway={nat_gateway_name} "
                     "region={gcp_region} ports_used={nat_ports_used}/{nat_ports_total} "
@@ -331,6 +426,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-nat-gateway", "cloud-load-balancer"],
                 "cascade_services": ["cloud-cdn-service"],
                 "description": "Cloud NAT endpoint-independent mapping failing for new connections",
+                "investigation_notes": (
+                    "Root cause: NAT mapping type determines how source ports are reused. ENDPOINT_INDEPENDENT "
+                    "mapping reuses the same external IP:port for all destinations from a given VM, which is "
+                    "required for protocols like STUN/TURN but consumes ports faster. ADDRESS_DEPENDENT mapping "
+                    "allows port reuse per destination IP. Mapping failures occur when port pool is exhausted for "
+                    "the configured mapping type. Diagnose with:\n"
+                    "  gcloud compute routers nats describe <nat> --router=<router> --region=<region> "
+                    "--format='value(natIpAllocateOption,sourceSubnetworkIpRangesToNat,endpointTypes)'\n"
+                    "Remediation for static NAT (manual IP assignment): add more NAT IPs:\n"
+                    "  gcloud compute routers nats update <nat> --router=<router> --region=<region> "
+                    "--nat-external-ip-pool=<ip1>,<ip2>,<ip3>\n"
+                    "For dynamic NAT (auto-allocated): switch to manual allocation with a larger pool. "
+                    "If ENDPOINT_INDEPENDENT is not required, switch to ADDRESS_DEPENDENT to reduce port pressure. "
+                    "Review Cloud NAT logs: Console > Logging > resource.type='nat_gateway'."
+                ),
+                "remediation_action": "reconfigure_nat_mapping",
                 "error_message": (
                     "cloudnat: NAT-ENDPOINT-MAPPING-FAILURE gateway={nat_gateway_name} "
                     "mapping_type={nat_mapping_type} failures={nat_mapping_failures}/m "
@@ -358,6 +469,21 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-nat-gateway", "vpc-network-manager"],
                 "cascade_services": ["cloud-interconnect"],
                 "description": "Cloud NAT unable to allocate external IP addresses for outbound traffic",
+                "investigation_notes": (
+                    "Root cause: Cloud NAT cannot allocate additional external IPs due to project quota limits "
+                    "or IP conflicts. The EXTERNAL_IP_ADDRESS quota per region defaults to a limited number. "
+                    "If another NAT gateway or resource holds the IP, allocation fails. Check quotas:\n"
+                    "  gcloud compute project-info describe --project=<project> "
+                    "--format='table(quotas.filter(metric=STATIC_ADDRESSES).limit,usage)'\n"
+                    "  gcloud compute addresses list --filter='region:<region> AND status:RESERVED'\n"
+                    "Remediation: Release unused static IPs:\n"
+                    "  gcloud compute addresses delete <unused-ip> --region=<region>\n"
+                    "Or request a quota increase via Console > IAM & Admin > Quotas > filter 'In-use IP addresses'. "
+                    "If IPs are held by other NAT gateways, consolidate NAT configurations. For immediate relief, "
+                    "switch to AUTO_ONLY allocation mode which uses GCP-managed ephemeral IPs (note: IPs will "
+                    "change on gateway restart, which may break IP-allowlisted external services)."
+                ),
+                "remediation_action": "reset_nat_gateway",
                 "error_message": (
                     "cloudnat: NAT-IP-ALLOCATION-ERROR gateway={nat_gateway_name} "
                     "region={gcp_region} allocated_ips={nat_allocated_ips}/{nat_max_ips} "
@@ -385,6 +511,21 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-dns-resolver", "vpc-network-manager"],
                 "cascade_services": ["cloud-armor-waf", "network-intelligence"],
                 "description": "DNSSEC signature validation failing for managed DNS zones",
+                "investigation_notes": (
+                    "Root cause: DNSSEC validation failures typically stem from expired RRSIG signatures, missing "
+                    "or mismatched DS records at the parent zone, or key rotation failures. Cloud DNS manages "
+                    "DNSSEC keys automatically, but DS records at the domain registrar must be updated manually "
+                    "when key-signing keys (KSK) rotate. Diagnose with:\n"
+                    "  gcloud dns managed-zones describe <zone> --format='value(dnssecConfig)'\n"
+                    "  gcloud dns dns-keys list --zone=<zone> --format='table(id,type,algorithm,isActive,dsRecord)'\n"
+                    "  dig +dnssec +trace <record_name> @8.8.8.8\n"
+                    "Remediation: If DS record is MISSING/STALE, get the current DS record from Cloud DNS and "
+                    "update at the registrar:\n"
+                    "  gcloud dns dns-keys describe <key-id> --zone=<zone> --format='value(dsRecord)'\n"
+                    "If RRSIG is expired, force a key rotation: Console > Cloud DNS > <zone> > DNSSEC > Rotate Keys. "
+                    "Allow 24-48 hours for DNS propagation of new DS records through the global DNS hierarchy."
+                ),
+                "remediation_action": "reset_dns_zone",
                 "error_message": (
                     "cloud-dns: DNS-DNSSEC-VALIDATION-FAILURE zone={dns_zone} "
                     "record={dns_record_name} type={dns_record_type} "
@@ -413,6 +554,21 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-dns-resolver", "cloud-load-balancer"],
                 "cascade_services": ["cloud-cdn-service", "network-intelligence"],
                 "description": "DNS record changes taking abnormally long to propagate across Cloud DNS servers",
+                "investigation_notes": (
+                    "Root cause: Cloud DNS record changes normally propagate within 60 seconds, but delays occur "
+                    "when authoritative name servers are under heavy query load, when the zone has a very large "
+                    "record set, or when there are pending DNSSEC re-signing operations. Check change status:\n"
+                    "  gcloud dns record-sets changes describe <change-id> --zone=<zone>\n"
+                    "  gcloud dns record-sets changes list --zone=<zone> --sort-by=startTime --limit=5\n"
+                    "Remediation: If change is stuck in PENDING, verify the zone is not locked by another operation. "
+                    "Flush local DNS caches on affected VMs:\n"
+                    "  sudo systemd-resolve --flush-caches (on Container-Optimized OS)\n"
+                    "For external clients, reduce TTL on the record before making changes (set TTL to 60s, wait "
+                    "for old TTL to expire, then make the change). Check if Cloud DNS name servers are responding:\n"
+                    "  dig <record> @ns-cloud-a1.googledomains.com\n"
+                    "If servers are unresponsive, check Cloud DNS quota and zone status in Console > Network Services > Cloud DNS."
+                ),
+                "remediation_action": "flush_dns_cache",
                 "error_message": (
                     "cloud-dns: DNS-ZONE-PROPAGATION-DELAY zone={dns_zone} "
                     "change_id={dns_change_id} record={dns_record_name} "
@@ -440,6 +596,21 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-interconnect", "vpc-network-manager"],
                 "cascade_services": ["cloud-vpn-gateway", "network-intelligence"],
                 "description": "Dedicated Interconnect circuit losing link, failing over to backup path",
+                "investigation_notes": (
+                    "Root cause: Dedicated Interconnect circuit link is DOWN, indicating a physical layer issue. "
+                    "LACP state DETACHED means the link aggregation group has lost member links. Common causes: "
+                    "fiber cut at colocation facility, optics degradation, or cross-connect issue. Diagnose with:\n"
+                    "  gcloud compute interconnects describe <interconnect> --format='value(state,operationalStatus,circuitInfos)'\n"
+                    "  gcloud compute interconnects attachments describe <attachment> --region=<region>\n"
+                    "  Console > Hybrid Connectivity > Interconnect > <name> > Diagnostics tab\n"
+                    "Remediation: If failover is ACTIVE_ON_BACKUP, traffic is flowing via the secondary path. "
+                    "Contact the colocation provider to inspect the cross-connect and verify optic light levels. "
+                    "Check for maintenance notifications: gcloud compute interconnects get-macsec-config <name>. "
+                    "If NO_BACKUP, immediately engage VPN as emergency backup:\n"
+                    "  gcloud compute vpn-tunnels create emergency-tunnel --region=<region> --peer-address=<peer> "
+                    "--shared-secret=<secret> --router=<router>"
+                ),
+                "remediation_action": "reset_interconnect_attachment",
                 "error_message": (
                     "[Interconnect] INTERCONNECT-CIRCUIT-DOWN attachment={interconnect_name} "
                     "circuit_id={circuit_id} location={interconnect_location} "
@@ -469,6 +640,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-interconnect", "cloud-vpn-gateway"],
                 "cascade_services": ["vpc-network-manager", "cloud-nat-gateway"],
                 "description": "Cloud Router BGP session repeatedly flapping on interconnect attachment",
+                "investigation_notes": (
+                    "Root cause: BGP session flapping indicates the Cloud Router is repeatedly establishing and "
+                    "dropping the BGP peering with the on-premises router. Common causes: MTU mismatch (Interconnect "
+                    "supports 1440-byte MTU for BGP), hold timer too aggressive, route advertisement exceeding "
+                    "peer capacity, or unstable physical link causing BFD to trigger fast failover. Diagnose:\n"
+                    "  gcloud compute routers describe <router> --region=<region> --format='value(bgpPeers)'\n"
+                    "  gcloud compute routers get-status <router> --region=<region>\n"
+                    "  Console > Hybrid Connectivity > Cloud Routers > <router> > BGP Sessions tab\n"
+                    "Remediation: Increase BGP hold timer to reduce flap sensitivity:\n"
+                    "  gcloud compute routers update-bgp-peer <router> --region=<region> --peer-name=<peer> "
+                    "--advertised-route-priority=100\n"
+                    "Disable BFD temporarily to confirm if physical link instability is the trigger. Verify "
+                    "peer ASN and IP configuration match on both sides. Reduce advertised routes with custom "
+                    "route advertisements to stay under peer import limits."
+                ),
+                "remediation_action": "restart_bgp_session",
                 "error_message": (
                     "[CloudRouter] INTERCONNECT-BGP-FLAP router={cloud_router} "
                     "peer={bgp_peer_ip} peer_asn={bgp_peer_asn} "
@@ -497,6 +684,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-cdn-service", "cloud-load-balancer"],
                 "cascade_services": ["vpc-network-manager"],
                 "description": "Cloud CDN cache hit ratio dropping significantly, overwhelming origin servers",
+                "investigation_notes": (
+                    "Root cause: Cache miss spike indicates CDN edge nodes are not serving cached content. "
+                    "Common causes: cache key policy includes query strings or headers that create too many unique "
+                    "keys, origin setting Cache-Control: no-store or private headers, recent cache invalidation "
+                    "flushing popular content, or signed URL expiration causing cache bypass. Diagnose by path:\n"
+                    "  Console > Network Services > Cloud CDN > <backend> > Cache Performance tab\n"
+                    "  gcloud compute backend-services describe <backend> --global --format='value(cdnPolicy)'\n"
+                    "Remediation for path-specific cache misses: invalidate stale cached content by specific path:\n"
+                    "  gcloud compute url-maps invalidate-cdn-cache <url-map> --path='/api/v2/assets/*'\n"
+                    "Fix cache key policy to exclude unnecessary query params:\n"
+                    "  gcloud compute backend-services update <backend> --global "
+                    "--cache-key-include-query-string=false\n"
+                    "Increase cache TTL for static assets. Verify origin is returning proper Cache-Control headers "
+                    "with max-age. Check origin health since 5xx responses are not cached."
+                ),
+                "remediation_action": "invalidate_cdn_cache",
                 "error_message": (
                     "[CloudCDN] CDN-CACHE-MISS-SPIKE backend={cdn_backend} "
                     "hit_ratio={cdn_hit_ratio}% (SLA {cdn_hit_sla}%) "
@@ -524,6 +727,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-cdn-service", "cloud-load-balancer"],
                 "cascade_services": ["cloud-armor-waf"],
                 "description": "Cloud CDN unable to reach origin backend, serving stale content",
+                "investigation_notes": (
+                    "Root cause: CDN edge nodes cannot reach the origin backend service. Status codes 502/503 "
+                    "indicate the origin is down or overloaded; 504 indicates a timeout. A status of 0 means "
+                    "the connection was refused or timed out at the TCP level. CDN is serving stale cached content "
+                    "while the stale TTL has not expired. Once stale TTL expires, clients will see errors. Diagnose:\n"
+                    "  gcloud compute backend-services get-health <backend> --global\n"
+                    "  gcloud compute health-checks describe <health-check> --format='value(httpHealthCheck)'\n"
+                    "  Console > Network Services > Load Balancing > <lb> > Backend details (health status)\n"
+                    "Remediation: Check origin instance group health and scaling. If origin is a GKE service, verify "
+                    "pods are running: kubectl get pods -n <namespace> -l app=<origin-app>. Reset the CDN backend "
+                    "association to trigger fresh origin health checks:\n"
+                    "  gcloud compute backend-services update <backend> --global --enable-cdn\n"
+                    "Configure connection draining timeout and increase stale TTL as a safety net:\n"
+                    "  gcloud compute backend-services update <backend> --global --serve-while-stale-max-age=3600"
+                ),
+                "remediation_action": "reset_cdn_backend",
                 "error_message": (
                     "[CloudCDN] CDN-ORIGIN-UNREACHABLE backend={cdn_backend} "
                     "origin={cdn_origin_host} status_code={cdn_origin_status} "
@@ -551,6 +770,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-load-balancer", "vpc-network-manager"],
                 "cascade_services": ["cloud-cdn-service", "cloud-armor-waf"],
                 "description": "Load balancer backend instances failing health checks",
+                "investigation_notes": (
+                    "Root cause: Backend instances are failing consecutive health checks, causing the LB to mark "
+                    "them as unhealthy and stop sending traffic. Common causes: application crash/OOM, health check "
+                    "endpoint misconfiguration (wrong port or path), firewall rules blocking health check probes "
+                    "(GCP health checks come from 130.211.0.0/22 and 35.191.0.0/16). Diagnose:\n"
+                    "  gcloud compute backend-services get-health <backend-service> --global\n"
+                    "  gcloud compute health-checks describe <health-check>\n"
+                    "  gcloud compute firewall-rules list --filter='sourceRanges:130.211.0.0/22 OR sourceRanges:35.191.0.0/16'\n"
+                    "Remediation: Verify health check configuration matches the application's actual health endpoint:\n"
+                    "  gcloud compute health-checks update http <hc> --port=<correct_port> --request-path=<correct_path>\n"
+                    "Ensure firewall rules allow health check probes:\n"
+                    "  gcloud compute firewall-rules create allow-health-checks --network=<vpc> "
+                    "--source-ranges=130.211.0.0/22,35.191.0.0/16 --allow=tcp:<port>\n"
+                    "Check instance logs for application crashes: Console > Compute Engine > <instance> > Serial port output."
+                ),
+                "remediation_action": "reconfigure_health_checks",
                 "error_message": (
                     "[CloudLB] LB-BACKEND-UNHEALTHY forwarding_rule={lb_forwarding_rule} "
                     "backend_service={lb_backend_service} "
@@ -579,6 +814,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-load-balancer", "cloud-cdn-service"],
                 "cascade_services": ["cloud-armor-waf"],
                 "description": "Google-managed SSL certificate approaching or past expiration",
+                "investigation_notes": (
+                    "Root cause: Google-managed SSL certificate renewal has failed. The managed status "
+                    "FAILED_NOT_VISIBLE means Google's CA cannot reach the domain for DCV (Domain Control Validation), "
+                    "FAILED_CAA_CHECKING means CAA DNS records do not permit Google's CA (pki.goog), and "
+                    "PROVISIONING means the cert is still being issued but may be stuck. Check status:\n"
+                    "  gcloud compute ssl-certificates describe <cert> --format='value(managed.status,managed.domainStatus)'\n"
+                    "  gcloud compute ssl-certificates list --filter='type:MANAGED AND managed.status!=ACTIVE'\n"
+                    "Remediation: Verify DNS A/AAAA record points to the LB's external IP:\n"
+                    "  dig <domain> +short (must resolve to the forwarding rule IP)\n"
+                    "Add or fix CAA record to allow Google's CA: add DNS CAA record 'pki.goog' for the domain. "
+                    "If stuck in PROVISIONING > 24h, delete and recreate the certificate:\n"
+                    "  gcloud compute ssl-certificates delete <cert>\n"
+                    "  gcloud compute ssl-certificates create <cert> --domains=<domain> --global\n"
+                    "Attach the new cert to the target HTTPS proxy immediately."
+                ),
+                "remediation_action": "reset_backend_service",
                 "error_message": (
                     "[CloudLB] LB-SSL-CERT-EXPIRY certificate={ssl_cert_name} "
                     "domain={ssl_domain} expires_in={ssl_days_remaining}d "
@@ -606,6 +857,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-vpn-gateway", "cloud-interconnect"],
                 "cascade_services": ["vpc-network-manager", "network-intelligence"],
                 "description": "Cloud VPN tunnel losing connectivity to remote peer",
+                "investigation_notes": (
+                    "Root cause: VPN tunnel has transitioned to DOWN state, meaning IPsec SA (Security Association) "
+                    "has expired or been torn down. Common causes: remote peer IP changed, pre-shared key mismatch "
+                    "after rotation, IKE SA lifetime expired without successful rekey, or remote gateway is "
+                    "unreachable due to internet path failure. Diagnose:\n"
+                    "  gcloud compute vpn-tunnels describe <tunnel> --region=<region> --format='value(status,detailedStatus)'\n"
+                    "  gcloud compute vpn-tunnels list --filter='status!=ESTABLISHED' --format='table(name,region,status,peerIp)'\n"
+                    "  Console > Hybrid Connectivity > VPN > <tunnel> > Status tab (IKE logs)\n"
+                    "Remediation: Reset the VPN tunnel to force IKE renegotiation:\n"
+                    "  gcloud compute vpn-tunnels delete <tunnel> --region=<region>\n"
+                    "  gcloud compute vpn-tunnels create <tunnel> --region=<region> --peer-address=<peer-ip> "
+                    "--shared-secret=<secret> --ike-version=2 --router=<router> --vpn-gateway=<gw> --interface=0\n"
+                    "Verify the remote peer is reachable: ping <peer-ip> from a VM in the same region. "
+                    "Check if the remote side has rotated the pre-shared key."
+                ),
+                "remediation_action": "reset_vpn_tunnel",
                 "error_message": (
                     "[CloudVPN] VPN-TUNNEL-DOWN tunnel={vpn_tunnel_name} "
                     "gateway={vpn_gateway_name} peer={vpn_peer_ip} "
@@ -635,6 +902,22 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["cloud-vpn-gateway", "cloud-interconnect"],
                 "cascade_services": ["cloud-nat-gateway"],
                 "description": "IKE phase negotiation failing between Cloud VPN and remote peer",
+                "investigation_notes": (
+                    "Root cause: IKE negotiation failure at the indicated phase. Phase 1 failures (NO_PROPOSAL_CHOSEN, "
+                    "AUTHENTICATION_FAILED) indicate cipher suite or PSK mismatch. Phase 2 failures (TS_UNACCEPTABLE, "
+                    "INVALID_KE_PAYLOAD) indicate traffic selector or DH group mismatch. GCP Cloud VPN supports "
+                    "specific cipher combinations; the remote peer must match exactly. Diagnose:\n"
+                    "  gcloud compute vpn-tunnels describe <tunnel> --region=<region> --format='value(detailedStatus)'\n"
+                    "  Console > Logging > resource.type='vpn_gateway' severity>=WARNING\n"
+                    "Remediation: For NO_PROPOSAL_CHOSEN, align cipher suites with GCP-supported combinations:\n"
+                    "  IKEv2: AES-256-CBC + SHA-256 + DH group 14 (or AES-256-GCM for combined mode)\n"
+                    "For AUTHENTICATION_FAILED, verify pre-shared key matches on both sides. Rekey the session:\n"
+                    "  gcloud compute vpn-tunnels update <tunnel> --region=<region> --shared-secret=<new-secret>\n"
+                    "  (then update the same secret on the remote peer)\n"
+                    "For TS_UNACCEPTABLE, ensure traffic selectors (local/remote CIDR) match: Cloud VPN uses "
+                    "0.0.0.0/0 by default with route-based VPN; remote peer must also use 0.0.0.0/0."
+                ),
+                "remediation_action": "rekey_vpn_session",
                 "error_message": (
                     "[CloudVPN] VPN-IKE-NEGOTIATION-FAILURE tunnel={vpn_tunnel_name} "
                     "gateway={vpn_gateway_name} peer={vpn_peer_ip} "
@@ -664,6 +947,23 @@ class GCPScenario(BaseScenario):
                 "affected_services": ["network-intelligence", "vpc-network-manager"],
                 "cascade_services": ["cloud-vpn-gateway", "cloud-interconnect"],
                 "description": "Network Intelligence Center connectivity test detecting unreachable endpoints",
+                "investigation_notes": (
+                    "Root cause: Network Intelligence Center connectivity test is simulating the packet path and "
+                    "identifying a blocking resource. UNREACHABLE means a firewall or route is explicitly blocking; "
+                    "DROPPED means the packet is silently dropped; AMBIGUOUS means the analysis cannot determine "
+                    "the exact drop point. The blocking_resource field identifies the specific resource. Diagnose:\n"
+                    "  gcloud network-management connectivity-tests describe <test-name> --format=json\n"
+                    "  gcloud network-management connectivity-tests rerun <test-name>\n"
+                    "  Console > Network Intelligence Center > Connectivity Tests > <test> > Trace Details\n"
+                    "Remediation: Based on the blocking resource type:\n"
+                    "  - firewall-rule: Adjust or create allow rules (see channel 3 for priority semantics)\n"
+                    "  - route: Add or fix routes with gcloud compute routes create <route> --network=<vpc> "
+                    "--destination-range=<cidr> --next-hop-instance=<instance>\n"
+                    "  - vpc-peering: Ensure custom route export/import is enabled on both sides of the peering\n"
+                    "  - cloud-nat: Verify NAT configuration covers the source subnet\n"
+                    "Re-run the test after each fix to validate: gcloud network-management connectivity-tests rerun <test>"
+                ),
+                "remediation_action": "reconfigure_firewall_rules",
                 "error_message": (
                     "[NIC] NI-CONNECTIVITY-TEST-FAILURE test={ni_test_name} "
                     "src={ni_src_ip} dst={ni_dst_ip} protocol={ni_protocol} "
@@ -1060,6 +1360,223 @@ class GCPScenario(BaseScenario):
             CloudVpnGatewayService,
             NetworkIntelligenceService,
         ]
+
+    # ── Trace Attributes & RCA ───────────────────────────────────────
+
+    def get_trace_attributes(self, service_name: str, rng) -> dict:
+        uptime_s = int(time.time()) % 86400
+        base = {
+            "gcp.project_id": rng.choice(["gcpnet-prod-001", "gcpnet-prod-002", "gcpnet-staging"]),
+            "gcp.network_tier": rng.choice(["PREMIUM", "PREMIUM", "PREMIUM", "STANDARD"]),
+        }
+        svc_attrs = {
+            "vpc-network-manager": {
+                "vpc.network_tier": rng.choice(["PREMIUM", "STANDARD"]),
+                "vpc.subnet_cidr": rng.choice(["10.128.0.0/20", "10.142.0.0/20", "10.132.0.0/20"]),
+                "vpc.peering_count": rng.randint(1, 8),
+                "vpc.route_table_size": rng.randint(80, 250),
+                "vpc.mtu": rng.choice([1460, 1500, 8896]),
+            },
+            "cloud-armor-waf": {
+                "armor.policy_name": rng.choice(["gcpnet-waf-policy", "gcpnet-ddos-policy", "gcpnet-edge-policy"]),
+                "armor.rule_count": rng.randint(8, 45),
+                "armor.adaptive_protection": rng.choice([True, True, False]),
+                "armor.evaluation_mode": rng.choice(["STANDARD", "ADVANCED"]),
+            },
+            "cloud-nat-gateway": {
+                "nat.pool_utilization": round(rng.uniform(30.0, 95.0), 1),
+                "nat.port_allocation": rng.choice(["STATIC", "DYNAMIC"]),
+                "nat.min_ports_per_vm": rng.choice([64, 256, 1024, 2048]),
+                "nat.external_ip_count": rng.randint(1, 10),
+            },
+            "cloud-dns-resolver": {
+                "dns.query_type": rng.choice(["A", "AAAA", "CNAME", "MX", "TXT", "SRV"]),
+                "dns.zone_name": rng.choice(["gcpnet-internal", "gcpnet-prod-zone", "gcpnet-services"]),
+                "dns.dnssec_enabled": rng.choice([True, True, False]),
+                "dns.response_policy_count": rng.randint(0, 5),
+            },
+            "cloud-interconnect": {
+                "interconnect.circuit_id": f"CIR-{rng.randint(100000, 999999)}",
+                "interconnect.bandwidth_gbps": rng.choice([10, 10, 100]),
+                "interconnect.lacp_state": rng.choice(["ACTIVE", "ACTIVE", "ACTIVE", "DETACHED"]),
+                "interconnect.location": rng.choice(["iad-zone1-1", "dfw-zone1-1", "ams-zone1-1"]),
+            },
+            "cloud-vpn-gateway": {
+                "vpn.tunnel_status": rng.choice(["ESTABLISHED", "ESTABLISHED", "ESTABLISHED", "NEGOTIATING"]),
+                "vpn.ike_version": rng.choice(["IKEv2", "IKEv2", "IKEv1"]),
+                "vpn.peer_ip": f"203.0.113.{rng.randint(1, 254)}",
+                "vpn.ha_redundancy": rng.choice([True, True, False]),
+            },
+            "cloud-cdn-service": {
+                "cdn.cache_mode": rng.choice(["CACHE_ALL_STATIC", "USE_ORIGIN_HEADERS", "FORCE_CACHE_ALL"]),
+                "cdn.origin_region": rng.choice(["us-central1", "us-east1", "europe-west1"]),
+                "cdn.signed_url_enabled": rng.choice([True, False]),
+                "cdn.negative_caching": rng.choice([True, False]),
+            },
+            "cloud-load-balancer": {
+                "lb.backend_count": rng.randint(3, 12),
+                "lb.health_check_interval": rng.choice([5, 10, 30]),
+                "lb.scheme": rng.choice(["EXTERNAL_MANAGED", "INTERNAL_MANAGED", "EXTERNAL"]),
+                "lb.protocol": rng.choice(["HTTPS", "HTTP2", "TCP", "gRPC"]),
+            },
+            "network-intelligence": {
+                "ni.test_count_active": rng.randint(5, 25),
+                "ni.topology_nodes": rng.randint(30, 120),
+                "ni.last_scan_age_sec": rng.randint(10, 300),
+                "ni.firewall_insights_enabled": rng.choice([True, True, False]),
+            },
+        }
+        base.update(svc_attrs.get(service_name, {}))
+        return base
+
+    def get_rca_clues(self, channel: int, service_name: str, rng) -> dict:
+        clues = {
+            1: {  # VPC Peering Route Limit
+                "vpc-network-manager": {"vpc.route_utilization_pct": round(rng.uniform(96, 100), 1), "vpc.peering_name": "peer-to-shared-vpc"},
+                "cloud-load-balancer": {"lb.route_advertisement_status": "stale", "lb.backend_reachability": "partial"},
+                "cloud-nat-gateway": {"nat.egress_route_affected": True, "nat.fallback_route": "default-igw"},
+            },
+            2: {  # Subnet IP Exhaustion
+                "vpc-network-manager": {"vpc.subnet_util_pct": round(rng.uniform(96, 100), 1), "vpc.secondary_range_available": False},
+                "cloud-nat-gateway": {"nat.ip_allocation_failures": rng.randint(10, 50), "nat.affected_subnet": "gcpnet-subnet-central1"},
+                "cloud-load-balancer": {"lb.new_backend_registration": "blocked", "lb.pending_ip_requests": rng.randint(5, 20)},
+                "cloud-cdn-service": {"cdn.origin_health_check_ip": "exhausted"},
+            },
+            3: {  # Firewall Rule Conflict
+                "vpc-network-manager": {"vpc.conflicting_priorities": "900-vs-1000", "vpc.denied_flow_spike": True},
+                "cloud-armor-waf": {"armor.policy_bypass_detected": True, "armor.upstream_fw_conflict": "deny-all-ingress"},
+                "cloud-interconnect": {"interconnect.onprem_traffic_blocked": True, "interconnect.affected_fw_rule": "deny-egress-default"},
+            },
+            4: {  # DDoS Alert Triggered
+                "cloud-armor-waf": {"armor.attack_vector": rng.choice(["SYN_FLOOD", "HTTP_FLOOD"]), "armor.adaptive_protection_mode": "engaged"},
+                "cloud-load-balancer": {"lb.request_spike_pct": round(rng.uniform(400, 2000), 0), "lb.backend_overload": True},
+                "vpc-network-manager": {"vpc.ingress_bandwidth_spike": True, "vpc.flow_log_anomaly": "volumetric"},
+                "cloud-cdn-service": {"cdn.cache_bypass_rate": round(rng.uniform(60, 95), 1)},
+            },
+            5: {  # WAF False Positive Surge
+                "cloud-armor-waf": {"armor.false_positive_rule": "sqli-v33-stable", "armor.sensitivity_level": 1},
+                "cloud-cdn-service": {"cdn.blocked_asset_paths": "/api/v2/search,/graphql", "cdn.cache_miss_from_blocks": True},
+                "cloud-load-balancer": {"lb.legitimate_traffic_dropped_pct": round(rng.uniform(5, 25), 1)},
+            },
+            6: {  # Security Policy Sync Failure
+                "cloud-armor-waf": {"armor.policy_version_mismatch": True, "armor.stale_backends_count": rng.randint(2, 5)},
+                "vpc-network-manager": {"vpc.security_posture": "inconsistent", "vpc.unprotected_backends": rng.randint(1, 3)},
+                "cloud-load-balancer": {"lb.policy_enforcement_gap": True, "lb.backends_without_policy": rng.randint(1, 4)},
+            },
+            7: {  # NAT Port Exhaustion
+                "cloud-nat-gateway": {"nat.min_ports_per_vm": 64, "nat.dynamic_port_allocation": False},
+                "vpc-network-manager": {"vpc.egress_failures": rng.randint(50, 300), "vpc.affected_vms": rng.randint(3, 12)},
+                "cloud-load-balancer": {"lb.external_api_timeouts": rng.randint(20, 100)},
+                "cloud-dns-resolver": {"dns.external_resolution_failures": rng.randint(10, 80)},
+            },
+            8: {  # NAT Endpoint Mapping Failure
+                "cloud-nat-gateway": {"nat.mapping_type_current": "ENDPOINT_INDEPENDENT", "nat.port_reuse_blocked": True},
+                "cloud-load-balancer": {"lb.nat_path_affected": True, "lb.connection_draining_stuck": rng.choice([True, False])},
+                "cloud-cdn-service": {"cdn.origin_fetch_via_nat": "failing", "cdn.stale_content_served": True},
+            },
+            9: {  # NAT IP Allocation Error
+                "cloud-nat-gateway": {"nat.quota_name": "EXTERNAL_IP_ADDRESS", "nat.quota_usage_pct": round(rng.uniform(95, 100), 1)},
+                "vpc-network-manager": {"vpc.nat_ip_conflict": True, "vpc.orphaned_static_ips": rng.randint(2, 8)},
+                "cloud-interconnect": {"interconnect.nat_failover_path": "unavailable"},
+            },
+            10: {  # DNSSEC Validation Failure
+                "cloud-dns-resolver": {"dns.rrsig_status": rng.choice(["EXPIRED", "EXPIRING"]), "dns.ds_record_stale": True},
+                "vpc-network-manager": {"vpc.dns_resolution_failures": rng.randint(50, 300), "vpc.affected_services": "internal"},
+                "cloud-armor-waf": {"armor.dns_based_rules_stale": True},
+                "network-intelligence": {"ni.dns_path_test": "FAIL", "ni.dnssec_chain_broken": True},
+            },
+            11: {  # DNS Zone Propagation Delay
+                "cloud-dns-resolver": {"dns.propagation_lag_sec": rng.randint(120, 600), "dns.change_status": "PENDING"},
+                "cloud-load-balancer": {"lb.dns_stale_ip": True, "lb.traffic_to_old_backend": round(rng.uniform(10, 40), 1)},
+                "cloud-cdn-service": {"cdn.dns_cache_stale": True, "cdn.origin_resolution_mismatch": True},
+                "network-intelligence": {"ni.dns_consistency_check": "INCONSISTENT"},
+            },
+            12: {  # Interconnect Circuit Down
+                "cloud-interconnect": {"interconnect.lacp_state": "DETACHED", "interconnect.light_level_dbm": round(rng.uniform(-30, -20), 1)},
+                "vpc-network-manager": {"vpc.onprem_route_withdrawn": True, "vpc.bgp_routes_lost": rng.randint(10, 50)},
+                "cloud-vpn-gateway": {"vpn.failover_activated": True, "vpn.backup_tunnel_latency_ms": rng.randint(15, 80)},
+                "network-intelligence": {"ni.interconnect_path_test": "UNREACHABLE", "ni.failover_status": "IN_PROGRESS"},
+            },
+            13: {  # BGP Session Flap
+                "cloud-interconnect": {"interconnect.bgp_hold_timer": rng.choice([90, 120, 180]), "interconnect.bfd_status": "DOWN"},
+                "cloud-vpn-gateway": {"vpn.route_convergence_delayed": True, "vpn.backup_route_active": rng.choice([True, False])},
+                "vpc-network-manager": {"vpc.route_table_oscillating": True, "vpc.stale_routes": rng.randint(5, 20)},
+                "cloud-nat-gateway": {"nat.outbound_path_flapping": True},
+            },
+            14: {  # CDN Cache Miss Spike
+                "cloud-cdn-service": {"cdn.cache_key_policy": "includes_query_strings", "cdn.unique_cache_keys": rng.randint(50000, 200000)},
+                "cloud-load-balancer": {"lb.origin_request_surge": round(rng.uniform(300, 800), 0), "lb.backend_cpu_spike": True},
+                "vpc-network-manager": {"vpc.egress_bandwidth_spike": True},
+            },
+            15: {  # CDN Origin Unreachable
+                "cloud-cdn-service": {"cdn.origin_status_code": rng.choice([502, 503, 504]), "cdn.stale_ttl_remaining_sec": rng.randint(30, 300)},
+                "cloud-load-balancer": {"lb.origin_health_check": "FAILING", "lb.healthy_backends": 0},
+                "cloud-armor-waf": {"armor.origin_path_blocked": rng.choice([True, False])},
+            },
+            16: {  # Backend Unhealthy
+                "cloud-load-balancer": {"lb.health_check_port": rng.choice([8080, 443, 3000]), "lb.consecutive_failures": rng.randint(3, 10)},
+                "vpc-network-manager": {"vpc.health_check_fw_rule": rng.choice(["PRESENT", "MISSING"]), "vpc.probe_source_range": "130.211.0.0/22"},
+                "cloud-cdn-service": {"cdn.serving_stale_from_unhealthy": True},
+                "cloud-armor-waf": {"armor.backend_protection_gap": True},
+            },
+            17: {  # SSL Certificate Expiry
+                "cloud-load-balancer": {"lb.managed_cert_status": rng.choice(["FAILED_NOT_VISIBLE", "FAILED_CAA_CHECKING"]), "lb.cert_domain": "api.gcpnet.example.com"},
+                "cloud-cdn-service": {"cdn.https_serving_degraded": True, "cdn.fallback_to_http": rng.choice([True, False])},
+                "cloud-armor-waf": {"armor.ssl_policy_affected": True},
+            },
+            18: {  # VPN Tunnel Down
+                "cloud-vpn-gateway": {"vpn.ipsec_sa_status": "EXPIRED", "vpn.last_rekey_sec_ago": rng.randint(300, 3600)},
+                "cloud-interconnect": {"interconnect.vpn_backup_needed": True, "interconnect.capacity_headroom_pct": round(rng.uniform(5, 30), 1)},
+                "vpc-network-manager": {"vpc.tunnel_routes_withdrawn": rng.randint(5, 20), "vpc.affected_remote_cidrs": rng.randint(2, 8)},
+                "network-intelligence": {"ni.vpn_path_test": "DOWN", "ni.latency_via_backup_ms": rng.randint(20, 120)},
+            },
+            19: {  # IKE Negotiation Failure
+                "cloud-vpn-gateway": {"vpn.ike_phase_failing": rng.choice(["1", "2"]), "vpn.cipher_mismatch": rng.choice([True, False])},
+                "cloud-interconnect": {"interconnect.vpn_failback_blocked": True},
+                "cloud-nat-gateway": {"nat.vpn_egress_rerouted": True},
+            },
+            20: {  # Connectivity Test Failure
+                "network-intelligence": {"ni.blocking_resource_type": rng.choice(["firewall-rule", "route", "vpc-peering", "cloud-nat"]), "ni.packet_trace_hops": rng.randint(2, 5)},
+                "vpc-network-manager": {"vpc.topology_anomaly_detected": True, "vpc.unreachable_subnets": rng.randint(1, 4)},
+                "cloud-vpn-gateway": {"vpn.cross_network_test": "FAIL"},
+                "cloud-interconnect": {"interconnect.hybrid_path_test": "FAIL"},
+            },
+        }
+        channel_clues = clues.get(channel, {})
+        return channel_clues.get(service_name, {})
+
+    def get_correlation_attribute(self, channel: int, is_error: bool, rng) -> dict:
+        correlation_attrs = {
+            1: ("deployment.terraform_version", "tf-1.7.2-canary"),
+            2: ("infra.gke_node_pool", "pool-spot-n2d-burst"),
+            3: ("network.firewall_policy_rev", "fw-policy-v34-rollback"),
+            4: ("infra.armor_ruleset", "owasp-crs-v4.0.0-rc2"),
+            5: ("deployment.waf_config_hash", "cfg-ab3f91-untested"),
+            6: ("network.policy_push_agent", "armor-sync-v2.1.0-beta"),
+            7: ("infra.nat_config_rev", "nat-dpa-v1.3-experimental"),
+            8: ("deployment.nat_mapping_mode", "endpoint-independent-v2"),
+            9: ("infra.ip_allocation_pool", "static-pool-region-east1"),
+            10: ("network.dnssec_key_id", "ksk-2024q4-rotation"),
+            11: ("deployment.dns_ttl_override", "ttl-60s-migration"),
+            12: ("infra.interconnect_optic", "lr4-100g-batch-2024q3"),
+            13: ("network.bgp_timer_profile", "aggressive-bfd-50ms"),
+            14: ("deployment.cdn_cache_key", "include-all-query-params"),
+            15: ("infra.origin_health_check", "hc-tcp-8080-patched"),
+            16: ("network.health_check_fw", "fw-rule-missing-35-191"),
+            17: ("deployment.cert_manager", "google-managed-v2-beta"),
+            18: ("infra.vpn_psk_rotation", "psk-rotate-2024q4-batch2"),
+            19: ("network.ike_cipher_suite", "aes256-sha384-dh20-nonstandard"),
+            20: ("deployment.ni_agent_version", "nic-agent-v3.2.0-rc1"),
+        }
+        attr_key, attr_val = correlation_attrs.get(channel, ("deployment.terraform_version", "unknown"))
+        # 90% on errors, 5% on healthy
+        if is_error:
+            if rng.random() < 0.90:
+                return {attr_key: attr_val}
+        else:
+            if rng.random() < 0.05:
+                return {attr_key: attr_val}
+        return {}
 
     # ── Fault Parameters ──────────────────────────────────────────────
 

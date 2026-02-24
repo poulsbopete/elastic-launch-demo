@@ -127,6 +127,21 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["game-server", "matchmaking-engine"],
                 "cascade_services": ["analytics-pipeline"],
                 "description": "Game state diverges between server authoritative state and client prediction, causing rubber-banding and rollback cascades",
+                "investigation_notes": (
+                    "Root cause: client-side prediction drift exceeds reconciliation threshold due to "
+                    "packet loss or jitter spikes on the UDP game channel. The server authoritative state "
+                    "and client extrapolation diverge beyond 0.5m, triggering forced rollbacks.\n"
+                    "1. Check network quality: run `netstat -su` on game-server pods for UDP packet drops; "
+                    "review CloudWatch `NetworkPacketsDropped` for the hosting AZ.\n"
+                    "2. Inspect tick alignment: query `FROM logs WHERE body.text LIKE '*NET-STATE-DESYNC*'` "
+                    "and correlate `seq` gaps — 2+ ticks behind indicates client CPU starvation or GC pauses.\n"
+                    "3. Verify interpolation buffer: if `interp_delay` is <100ms, increase to 150ms to absorb jitter.\n"
+                    "4. Remediate: if widespread, issue `reset_game_state` to force all clients to re-download "
+                    "authoritative world state and rebuild prediction buffers from scratch.\n"
+                    "5. Long-term: audit the client prediction model — consider switching from dead-reckoning "
+                    "to hermite interpolation for smoother reconciliation under packet loss."
+                ),
+                "remediation_action": "reset_game_state",
                 "error_message": "[Net] NET-STATE-DESYNC: player={player_id} pos_delta={position_delta}m threshold=0.5m tick={tick_number} match={match_id}",
                 "stack_trace": (
                     "=== NET STATE RECONCILIATION DUMP ===\n"
@@ -156,6 +171,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["game-server", "analytics-pipeline"],
                 "cascade_services": ["matchmaking-engine"],
                 "description": "Physics simulation accumulates floating-point errors causing object positions to overflow into NaN territory",
+                "investigation_notes": (
+                    "Root cause: the physics integrator uses single-precision floats for velocity accumulation, "
+                    "and repeated substep iterations without epsilon clamping allow energy injection from "
+                    "collision response to compound exponentially, pushing velocities past simulation limits.\n"
+                    "1. Check the entity trace: look at `accel` values in the dump — acceleration >10000 "
+                    "indicates a collision solver feedback loop (two overlapping colliders pumping energy).\n"
+                    "2. Inspect `penetration_max` — values >0.5m mean the broadphase AABB tree is stale; "
+                    "run `/debug physics rebuild_bvh` on the affected zone to force spatial index rebuild.\n"
+                    "3. Review substep count: 4 substeps at high entity density causes frame budget overrun; "
+                    "reduce to 2 substeps and enable CCD (continuous collision detection) for fast movers.\n"
+                    "4. Remediate: issue `reset_physics_engine` to zero all velocities, rebuild the collision "
+                    "world, and re-derive positions from the last valid snapshot.\n"
+                    "5. Long-term: migrate velocity accumulator to double-precision and add per-substep "
+                    "energy conservation checks to detect and break feedback loops before overflow."
+                ),
+                "remediation_action": "reset_physics_engine",
                 "error_message": "[Physics] PHYS-OVERFLOW: entity={entity_id} velocity={velocity} max={max_velocity} zone={zone_id} tick={tick_number}",
                 "stack_trace": (
                     "=== PHYSICS ENGINE STATE DUMP ===\n"
@@ -185,6 +216,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["matchmaking-engine", "game-server"],
                 "cascade_services": ["auth-gateway", "analytics-pipeline"],
                 "description": "Matchmaking queue depth exceeds capacity causing player wait times to spike beyond acceptable thresholds",
+                "investigation_notes": (
+                    "Root cause: inflow rate (enqueue/s) far exceeds outflow (dequeue/s), typically caused by "
+                    "a game server allocation bottleneck — the matchmaker finds groups but cannot place them "
+                    "because server provisioning is lagging behind demand.\n"
+                    "1. Check server pool: query `kubectl get pods -l app=game-server` on the EKS cluster to "
+                    "verify available game server instances; if pool is exhausted, scale the fleet.\n"
+                    "2. Review per-tier breakdown: diamond+ queues with 891 waiting is normal, but bronze-silver "
+                    "at 4201 indicates a systemic issue, not a thin-population problem.\n"
+                    "3. Inspect matchmaker logs for `EXPAND mmr_range` actions — repeated range expansions "
+                    "with no matches means the issue is server supply, not rating spread.\n"
+                    "4. Remediate: issue `restart_matchmaker` to clear stale queue entries and reset internal "
+                    "timers; simultaneously scale game-server pods to increase placement capacity.\n"
+                    "5. If region-locked, temporarily relax region constraints to allow cross-region placement "
+                    "while new servers spin up."
+                ),
+                "remediation_action": "restart_matchmaker",
                 "error_message": "[MM] MM-QUEUE-OVERFLOW: pool={queue_name} queue={queue_depth} max={max_capacity} wait_p99={wait_time_ms}ms region={region}",
                 "stack_trace": (
                     "=== MATCHMAKING QUEUE STATE DUMP ===\n"
@@ -215,6 +262,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["matchmaking-engine", "leaderboard-api"],
                 "cascade_services": ["analytics-pipeline"],
                 "description": "Skill rating calculation produces invalid MMR values due to edge cases in the Elo/Glicko algorithm implementation",
+                "investigation_notes": (
+                    "Root cause: a code defect in the Glicko-2 convergence loop — the volatility (sigma) "
+                    "iterative solver does not clamp intermediate values, allowing sigma to diverge when "
+                    "a player's actual score vastly exceeds expected score (e.g., 0.83 vs 0.41). This "
+                    "produces new_mu values outside the valid [0, max_mmr] range.\n"
+                    "1. Check convergence iterations: if `convergence_i` approaches max (20), the Illinois "
+                    "method is not converging — the tau system constant may be misconfigured.\n"
+                    "2. Query affected players: `FROM logs WHERE body.text LIKE '*MM-SKILL-RATING-DIVERGE*'` "
+                    "and check how many players have out-of-range MMR in the current season.\n"
+                    "3. Validate the Glicko-2 implementation against Mark Glickman's reference paper — "
+                    "specifically step 5.1 (volatility estimation) needs a bisection fallback.\n"
+                    "4. Remediate: issue `reset_skill_ratings` for affected players to recalculate from "
+                    "match history; deploy a hotfix adding sigma clamping (0.3 < sigma < 1.2).\n"
+                    "5. The current CLAMP action masks the defect — the algorithm must be fixed to prevent "
+                    "incorrect competitive matchmaking downstream."
+                ),
+                "remediation_action": "reset_skill_ratings",
                 "error_message": "[MM] MM-SKILL-RATING-DIVERGE: player={player_id} mmr={mmr_value} valid_range=[0,{max_mmr}] volatility={volatility} match={match_id}",
                 "stack_trace": (
                     "=== GLICKO-2 CALCULATION TRACE ===\n"
@@ -248,6 +312,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["content-delivery", "game-server"],
                 "cascade_services": ["analytics-pipeline"],
                 "description": "Cascading cache misses overwhelm origin servers as hot content expires simultaneously across edge nodes",
+                "investigation_notes": (
+                    "Root cause: cache TTL alignment — all edge nodes received the same asset bundle version "
+                    "at the same time, so TTLs expire simultaneously, causing a thundering herd of origin "
+                    "requests. The origin circuit breaker enters HALF_OPEN state under the load spike.\n"
+                    "1. Check origin health: verify origin S3/GCS bucket response times in CloudWatch or "
+                    "Stackdriver — p99 >500ms confirms origin saturation.\n"
+                    "2. Review cache eviction logs: 14,203 evictions/min with only 32.1% warm cache means "
+                    "the edge LRU is thrashing; increase edge cache capacity or tier hot assets.\n"
+                    "3. Inspect per-asset-group miss rates: textures-hd at 4,201 misses/min is the primary "
+                    "driver — pre-warm these via `cdn-cli prefetch --group textures-hd --edges all`.\n"
+                    "4. Remediate: issue `purge_cdn_cache` on stale edges and then `reset_cdn_origin` to "
+                    "restart origin connection pools; add jittered TTL offsets (TTL + rand(0, 300s)) to "
+                    "prevent future synchronized expiration storms.\n"
+                    "5. Enable request coalescing on the CDN edge layer so concurrent misses for the same "
+                    "asset are collapsed into a single origin fetch."
+                ),
+                "remediation_action": "purge_cdn_cache",
                 "error_message": "[CDN] CDN-CACHE-MISS-STORM: edge={edge_node} hit_rate={cache_hit_rate}% threshold=85% origin_load={origin_load_pct}% asset_group={asset_group}",
                 "stack_trace": (
                     "=== CDN EDGE NODE CACHE STATISTICS ===\n"
@@ -279,6 +360,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["content-delivery", "game-server"],
                 "cascade_services": ["moderation-engine"],
                 "description": "Game asset bundles fail integrity verification after CDN transfer, causing client crashes on load",
+                "investigation_notes": (
+                    "Root cause: chunk-level corruption during CDN edge-to-client transfer — TCP resets "
+                    "during large bundle downloads cause partial chunk writes that pass length checks but "
+                    "fail SHA-256 verification. The corrupt chunk is typically at a TCP segment boundary.\n"
+                    "1. Identify the corrupt chunk offset: chunk 23 at offset 92274688 — correlate with "
+                    "CDN edge access logs for `tcp_resets` around the transfer timestamp.\n"
+                    "2. Verify origin integrity: re-fetch the bundle directly from origin (bypassing CDN) "
+                    "with `curl -H 'Cache-Control: no-cache' <origin_url> | sha256sum` to rule out origin "
+                    "corruption vs. transit corruption.\n"
+                    "3. Check edge node health: if `edge-iad-01` shows elevated tcp_resets across multiple "
+                    "bundles, the edge node may have a faulty NIC or be under DDoS.\n"
+                    "4. Remediate: issue `reset_cdn_origin` to invalidate the corrupted cached copy on the "
+                    "edge node; quarantine the bad bundle hash and force re-download for affected clients.\n"
+                    "5. Enable end-to-end chunk checksumming with per-chunk CRC32 verification on the client "
+                    "side so corrupted chunks trigger targeted re-fetch instead of full bundle re-download."
+                ),
+                "remediation_action": "reset_cdn_origin",
                 "error_message": "[CDN] CDN-ASSET-CORRUPT: bundle={bundle_id} expected={expected_hash} actual={actual_hash} size={bundle_size_mb}MB version={bundle_version}",
                 "stack_trace": (
                     "=== ASSET INTEGRITY VERIFICATION LOG ===\n"
@@ -310,6 +408,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["chat-service", "moderation-engine"],
                 "cascade_services": ["auth-gateway"],
                 "description": "Chat channels experiencing message floods that overwhelm rate limiters and moderation pipelines",
+                "investigation_notes": (
+                    "Root cause: coordinated bot accounts are flooding public chat channels at rates far "
+                    "exceeding per-user rate limits — the attack uses distributed bot networks where each "
+                    "bot stays just under individual limits but the aggregate overwhelms channel capacity.\n"
+                    "1. Check top senders: PLR-482910 and PLR-109284 flagged as BOT_SUSPECT — verify account "
+                    "age, friend count, and purchase history via `player-admin lookup <player_id>`.\n"
+                    "2. Review moderation queue: {pending_moderation} pending scans with 421 dropped means "
+                    "the automod NLP classifier is CPU-saturated; check GPU inference pod health.\n"
+                    "3. Inspect rate limiter config: per-user limit may be set correctly but channel-level "
+                    "aggregate limit is missing — add `channel_rate_limit` to the chat gateway config.\n"
+                    "4. Remediate: issue `restart_chat_service` to reset connection pools and apply updated "
+                    "rate limits; then `flush_message_queue` to clear the backed-up moderation pipeline.\n"
+                    "5. Ban confirmed bot accounts immediately and enable CAPTCHA challenges for accounts "
+                    "younger than 24 hours attempting to post in public channels."
+                ),
+                "remediation_action": "restart_chat_service",
                 "error_message": "[Chat] CHAT-FLOOD-DETECT: channel={channel_id} rate={message_rate}msg/s threshold={rate_limit}msg/s pending_mod={pending_moderation}",
                 "stack_trace": (
                     "=== CHAT RATE LIMITER STATE DUMP ===\n"
@@ -342,6 +456,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["chat-service", "game-server"],
                 "cascade_services": ["analytics-pipeline"],
                 "description": "Voice chat channels experiencing audio quality degradation with packet loss, jitter, and codec failures",
+                "investigation_notes": (
+                    "Root cause: voice server CPU saturation at 87.4% causes the audio mixing pipeline to "
+                    "miss its 10ms deadline, resulting in packet drops on the UDP voice channel. The server "
+                    "downgrades bitrate from 96kbps to 64kbps but this is insufficient under load.\n"
+                    "1. Check server resources: `top -p $(pgrep voice-mixer)` to verify CPU usage per thread; "
+                    "the mixing thread is single-core bound and needs CPU affinity pinning.\n"
+                    "2. Review MOS scores: any stream below 2.0 MOS is unintelligible — those players should "
+                    "be migrated to a less-loaded voice server immediately.\n"
+                    "3. Inspect FEC recovery rate: 12.3% recovery means FEC is working but insufficient for "
+                    "{voice_packet_loss_pct}% loss — consider enabling Opus FEC redundancy mode.\n"
+                    "4. Remediate: issue `restart_voice_servers` to rebalance voice channel assignments across "
+                    "the server pool; then `reset_codec_pipeline` to force codec renegotiation at optimal "
+                    "bitrates for current network conditions.\n"
+                    "5. Scale voice server pods horizontally and set max speakers per server to 50 to prevent "
+                    "CPU saturation; enable Opus DTX (discontinuous transmission) to reduce idle bandwidth."
+                ),
+                "remediation_action": "restart_voice_servers",
                 "error_message": "[Voice] VOICE-CHANNEL-OVERLOAD: channel={voice_channel_id} loss={voice_packet_loss_pct}% jitter={jitter_ms}ms speakers={active_speakers} codec={codec}",
                 "stack_trace": (
                     "=== VOICE SERVER QUALITY METRICS ===\n"
@@ -373,6 +504,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["leaderboard-api", "game-server"],
                 "cascade_services": ["analytics-pipeline", "moderation-engine"],
                 "description": "Leaderboard sorted set becomes inconsistent due to concurrent score updates causing rank calculation errors",
+                "investigation_notes": (
+                    "Root cause: concurrent ZADD operations to the Redis sorted set during AOF rewrite cause "
+                    "race conditions — two game servers submit score updates for overlapping rank ranges "
+                    "without distributed locking, producing rank inversions and NaN entries.\n"
+                    "1. Check Redis state: `redis-cli info persistence` — if `aof_rewrite_in_progress=1`, "
+                    "the rewrite is contending with writes; defer bulk score updates until rewrite completes.\n"
+                    "2. Audit the corruption: rank 42018 score > rank 42017 score is a classic ZADD race; "
+                    "NaN at rank 42103 indicates a Lua script received non-numeric input from game server.\n"
+                    "3. Verify ZSET cardinality: `ZCARD {leaderboard_id}` should match `total_entries` — "
+                    "any mismatch indicates phantom entries from incomplete transaction rollbacks.\n"
+                    "4. Remediate: issue `freeze_leaderboard` to block new writes, then `rebuild_leaderboard` "
+                    "to reconstruct the sorted set from the transaction log source of truth.\n"
+                    "5. Deploy Redlock-based distributed mutex for score update batches and add input "
+                    "validation to reject NaN/Infinity scores at the game server API boundary."
+                ),
+                "remediation_action": "rebuild_leaderboard",
                 "error_message": "[LB] LB-DATA-CORRUPT: board={leaderboard_id} affected={corrupt_entries} checksum_fail=true season={season_id}",
                 "stack_trace": (
                     "=== LEADERBOARD CONSISTENCY CHECK ===\n"
@@ -405,6 +552,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["leaderboard-api", "payment-processor"],
                 "cascade_services": ["analytics-pipeline"],
                 "description": "Season pass XP and tier progression fails to synchronize between game server events and the progression backend",
+                "investigation_notes": (
+                    "Root cause: the XP event pipeline uses at-most-once delivery from game servers to the "
+                    "progression backend — when the progression service is briefly unavailable or slow, XP "
+                    "events (kill_streak +350, weekly_bonus +2000) are dropped silently without retry.\n"
+                    "1. Check event delivery: query `FROM logs WHERE body.text LIKE '*SEASON-PASS-SYNC-FAIL*'` "
+                    "and examine which XP event types are consistently marked as NOT APPLIED.\n"
+                    "2. Verify progression backend health: check the leaderboard-api pods for OOMKilled or "
+                    "CrashLoopBackOff events that coincide with the missed XP window.\n"
+                    "3. Audit the event bus: inspect Kafka consumer lag for the `xp-events` topic — if "
+                    "consumer group is rebalancing, events may be dropped during partition reassignment.\n"
+                    "4. Remediate: issue `force_sync_season_pass` to replay missed XP events from the game "
+                    "server event log and recalculate tier placement for affected players.\n"
+                    "5. Migrate XP event delivery from fire-and-forget HTTP to a durable message queue with "
+                    "at-least-once delivery guarantees and idempotent processing on the consumer side."
+                ),
+                "remediation_action": "force_sync_season_pass",
                 "error_message": "[LB] SEASON-PASS-SYNC-FAIL: player={player_id} tier={current_tier} expected_tier={expected_tier} xp={xp_total} delta={xp_delta}XP season={season_id}",
                 "stack_trace": (
                     "=== SEASON PASS PROGRESSION STATE ===\n"
@@ -437,6 +600,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["auth-gateway", "game-server"],
                 "cascade_services": ["matchmaking-engine", "chat-service"],
                 "description": "Mass token refresh requests overwhelm the auth service when tokens expire simultaneously due to clock sync issues",
+                "investigation_notes": (
+                    "Root cause: token TTLs were issued with identical expiry timestamps because the auth "
+                    "service clock was NTP-synchronized during a bulk login wave (e.g., after maintenance). "
+                    "61.4% of active tokens expire within 5 minutes, creating a thundering herd.\n"
+                    "1. Check NTP sync: `chronyc tracking` on auth-gateway pods — a clock jump during token "
+                    "issuance would cause all tokens in that window to share the same expiry.\n"
+                    "2. Review provider breakdown: oauth-google and oauth-discord are OVERLOADED — verify "
+                    "their rate limits haven't been lowered; check provider status pages.\n"
+                    "3. Inspect JWKS cache: `jwks_cache_age=312s` is stale — if the signing key rotated "
+                    "and the cache is stale, all validations will fail and trigger needless refreshes.\n"
+                    "4. Remediate: issue `stagger_token_refresh` to add random jitter (0-300s) to expiry "
+                    "times and `extend_token_ttl` to push current expirations out by 5 minutes.\n"
+                    "5. Implement token refresh jitter at issuance time: TTL = base_ttl + random(0, 300s) "
+                    "to prevent future synchronized expiration storms."
+                ),
+                "remediation_action": "stagger_token_refresh",
                 "error_message": "[Auth] AUTH-TOKEN-STORM: refresh_rate={refresh_rate}/s capacity={max_refresh_rate}/s failures={failed_refreshes} pool={token_pool_id}",
                 "stack_trace": (
                     "=== TOKEN SERVICE METRICS DUMP ===\n"
@@ -471,6 +650,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["auth-gateway", "payment-processor"],
                 "cascade_services": ["moderation-engine", "analytics-pipeline"],
                 "description": "Anomaly detection system flags a surge in credential stuffing attempts indicating a coordinated account takeover campaign",
+                "investigation_notes": (
+                    "Root cause: a leaked credential database from another service is being replayed against "
+                    "the gaming platform. 94.2% of attempts come through VPN/proxy with low user-agent entropy, "
+                    "confirming automated credential stuffing tooling.\n"
+                    "1. Check the attack surface: 87% known-bad IP reputation with 12 Tor exit nodes — enable "
+                    "GeoIP blocking for the primary attack region via WAF rules.\n"
+                    "2. Review 0.3% success rate: even this low rate means ~30 accounts may be compromised per "
+                    "10,000 attempts — immediately force password resets for successfully authenticated IPs "
+                    "in the attack window.\n"
+                    "3. Inspect request patterns: 0.8ms avg interval between requests is clearly automated; "
+                    "deploy progressive rate limiting (CAPTCHA after 3 failures, block after 10).\n"
+                    "4. Remediate: issue `block_attack_ips` to immediately blacklist the {blocked_ips} flagged "
+                    "IPs and `enable_captcha_enforcement` globally for login endpoints.\n"
+                    "5. Notify affected players, enable mandatory 2FA for accounts accessed from new IPs, "
+                    "and submit the attack IPs to threat intelligence feeds."
+                ),
+                "remediation_action": "block_attack_ips",
                 "error_message": "[Auth] AUTH-TAKEOVER-DETECT: attempts={ato_attempts} window={window_seconds}s blocked_ips={blocked_ips} risk={risk_score} geo={geo_region}",
                 "stack_trace": (
                     "=== ATO DETECTION ANALYSIS ===\n"
@@ -505,6 +701,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["payment-processor", "auth-gateway"],
                 "cascade_services": ["analytics-pipeline"],
                 "description": "In-app purchase transactions failing at the payment gateway level due to provider timeouts or validation errors",
+                "investigation_notes": (
+                    "Root cause: the payment provider is returning HTTP 402 with elevated latency (8412ms vs "
+                    "normal <500ms), indicating provider-side degradation. The gateway retry logic compounds "
+                    "the issue by sending duplicate requests that may result in double charges.\n"
+                    "1. Check provider status: visit the payment provider status page (Stripe/PayPal/Apple/Google) "
+                    "for active incidents — if provider is degraded, enable circuit breaker to fail fast.\n"
+                    "2. Review error code distribution: TIMEOUT and PROVIDER_ERROR indicate provider issues; "
+                    "DECLINED and INSUFFICIENT_FUNDS are normal user errors and should not trigger alerts.\n"
+                    "3. Verify idempotency: the `{purchase_id}-r{retry_count}` key must be honored by the "
+                    "provider — check for duplicate gateway_txn IDs in the transaction log.\n"
+                    "4. Remediate: issue `reset_payment_gateway` to restart connection pools and clear stuck "
+                    "transactions; switch to backup payment provider if primary remains degraded.\n"
+                    "5. Queue failed purchases for automatic retry once provider recovers; notify affected "
+                    "players with an in-game message about the temporary payment disruption."
+                ),
+                "remediation_action": "reset_payment_gateway",
                 "error_message": "[IAP] IAP-PURCHASE-FAIL: txn={purchase_id} player={player_id} amount={amount}{currency} provider={payment_provider} code={error_code} retry={retry_count}/{max_retries}",
                 "stack_trace": (
                     "=== PAYMENT GATEWAY TRANSACTION TRACE ===\n"
@@ -538,6 +750,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["payment-processor", "leaderboard-api"],
                 "cascade_services": ["moderation-engine", "analytics-pipeline"],
                 "description": "Virtual currency ledger double-entry balances fail reconciliation, indicating potential duplication or lost transactions",
+                "investigation_notes": (
+                    "Root cause: a race condition in the ledger write path — concurrent purchase and spend "
+                    "operations execute without database-level serialization, allowing the cached balance to "
+                    "drift from the ledger transaction sum. The likely scenario is a duplicate LTXN application.\n"
+                    "1. Check for duplicate transactions: query the ledger for `{last_transaction_id}` — if "
+                    "it appears twice, the idempotency key was not enforced during a retry after timeout.\n"
+                    "2. Verify balance derivation: `cached_balance` is updated optimistically in Redis while "
+                    "`ledger_sum` is the authoritative SQL sum — the discrepancy of {discrepancy} units must "
+                    "be reconciled by replaying the ledger.\n"
+                    "3. Assess fraud risk: LOW fraud risk is reassuring but any ledger inconsistency must be "
+                    "treated as P1 — virtual currency duplication exploits spread rapidly once discovered.\n"
+                    "4. Remediate: issue `freeze_player_wallet` for affected players, then `reconcile_ledger` "
+                    "to recalculate balances from the transaction log source of truth.\n"
+                    "5. Deploy database-level serializable isolation for all currency mutations and add "
+                    "real-time balance checksumming that alerts immediately on any divergence >1 unit."
+                ),
+                "remediation_action": "restart_store_service",
                 "error_message": "[IAP] IAP-LEDGER-INCONSIST: player={player_id} balance={currency_balance} ledger_sum={ledger_sum} currency={virtual_currency} discrepancy={discrepancy} last_txn={last_transaction_id}",
                 "stack_trace": (
                     "=== LEDGER RECONCILIATION REPORT ===\n"
@@ -570,6 +799,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["analytics-pipeline", "game-server"],
                 "cascade_services": ["leaderboard-api"],
                 "description": "Analytics event ingestion pipeline falls behind, causing data lag and stale dashboards for live-ops teams",
+                "investigation_notes": (
+                    "Root cause: 4 of 8 Kafka consumer group members have disconnected, halving throughput "
+                    "while inflow remains constant. Partition-3 is completely stalled with the highest lag "
+                    "(27,193 events), indicating a stuck consumer or unbalanced partition assignment.\n"
+                    "1. Check consumer health: `kafka-consumer-groups --describe --group {pipeline_id}-cg` "
+                    "to identify which consumers are DEAD and which partitions are unassigned.\n"
+                    "2. Review rebalance history: 3 rebalances in 10 minutes indicates consumer instability — "
+                    "check for OOMKilled pods or network timeouts causing session.timeout.ms expiration.\n"
+                    "3. Inspect partition-3: if it has a hot key causing message skew, consider repartitioning "
+                    "the topic or adding a sub-partitioning strategy.\n"
+                    "4. Remediate: issue `restart_analytics_consumers` to force a clean consumer group "
+                    "rejoin; scale out to 12 consumers to handle the backlog burst.\n"
+                    "5. Set up consumer lag alerting at 30s threshold and configure auto-scaling for the "
+                    "consumer group based on per-partition lag metrics."
+                ),
+                "remediation_action": "restart_analytics_consumers",
                 "error_message": "[Analytics] ANALYTICS-INGEST-LAG: pipeline={pipeline_id} lag={lag_seconds}s threshold={max_lag_seconds}s backlog={backlog_count} throughput={throughput}/s",
                 "stack_trace": (
                     "=== PIPELINE CONSUMER GROUP STATUS ===\n"
@@ -603,6 +848,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["analytics-pipeline", "game-server"],
                 "cascade_services": ["matchmaking-engine"],
                 "description": "Player telemetry ring buffer overflows causing event data loss for analytics and anti-cheat systems",
+                "investigation_notes": (
+                    "Root cause: the ring buffer consumer (analytics pipeline) is draining slower than the "
+                    "producer (game server), and the buffer has no backpressure mechanism — when full, new "
+                    "events silently overwrite the oldest 20%, creating gaps in anti-cheat telemetry.\n"
+                    "1. Check event breakdown: player_move at 42.1% of buffer is the largest category — "
+                    "consider downsampling movement events (every 5th tick instead of every tick).\n"
+                    "2. Review drop rate: 12.4% sustained drop rate means anti-cheat is blind to ~1 in 8 "
+                    "player actions — this creates exploitable detection gaps.\n"
+                    "3. Inspect buffer sizing: current max of 100,000 slots may be undersized for peak "
+                    "concurrent players; calculate required capacity as `events_per_second * drain_latency_s`.\n"
+                    "4. Remediate: issue `resize_telemetry_buffer` to increase capacity to 500,000 slots "
+                    "and `restart_buffer_consumers` to clear the current overflow condition.\n"
+                    "5. Implement backpressure: when buffer hits 80%, throttle low-priority event types "
+                    "(player_move, state_snapshot) while preserving combat_event for anti-cheat integrity."
+                ),
+                "remediation_action": "resize_telemetry_buffer",
                 "error_message": "[Analytics] ANALYTICS-TELEMETRY-OVERFLOW: buffer={buffer_id} usage={buffer_usage_pct}% capacity={buffer_size}/{max_buffer_size} dropped={dropped_events}",
                 "stack_trace": (
                     "=== RING BUFFER DIAGNOSTIC ===\n"
@@ -637,6 +898,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["moderation-engine", "chat-service"],
                 "cascade_services": ["analytics-pipeline"],
                 "description": "Automated content moderation system producing excessive false positives, silencing legitimate player communication",
+                "investigation_notes": (
+                    "Root cause: the automod NLP classifier model was updated to a new version that has "
+                    "dramatically higher sensitivity for the hate_speech category (fp_rate jumped from 2.1% "
+                    "to 34.8%), likely due to training data contamination or threshold miscalibration.\n"
+                    "1. Check model versioning: compare precision/recall between current and previous model "
+                    "version — if recall stayed at 0.95 but precision dropped to 0.42, the decision threshold "
+                    "was lowered too aggressively during the update.\n"
+                    "2. Review silenced players: {affected_players} wrongly silenced players with 847 pending "
+                    "appeals — prioritize unsilencing by checking if their messages match known-good patterns.\n"
+                    "3. Inspect category breakdown: hate_speech fp_rate of 34.8% is the primary driver — "
+                    "this category likely needs a higher confidence threshold (0.85 instead of 0.60).\n"
+                    "4. Remediate: issue `rollback_automod_model` to revert to the previous model version "
+                    "and `unsilence_affected_players` to restore communication for falsely flagged accounts.\n"
+                    "5. Implement canary model deployment: route 5% of traffic to new model versions and "
+                    "compare fp_rate before full rollout; add automated rollback on fp_rate >5%."
+                ),
+                "remediation_action": "rollback_automod_model",
                 "error_message": "[T&S] MOD-FALSE-POS-STORM: flagged={false_positive_count} window={window_minutes}min fp_rate={fp_rate_pct}% model={model_version} affected_players={affected_players}",
                 "stack_trace": (
                     "=== AUTOMOD ACCURACY METRICS ===\n"
@@ -672,6 +950,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["moderation-engine", "chat-service"],
                 "cascade_services": ["auth-gateway"],
                 "description": "Player report queue exceeds processing capacity causing delays in abuse case resolution",
+                "investigation_notes": (
+                    "Root cause: 8 of 12 report processing workers have crashed (likely OOM on GPU inference "
+                    "nodes), reducing processing capacity by 67%. Auto-resolve is disabled due to high false "
+                    "positive rates from the automod model, creating a dual failure mode.\n"
+                    "1. Check worker pods: `kubectl get pods -l app=report-processor` on the AKS cluster — "
+                    "look for OOMKilled or CrashLoopBackOff status on GPU-attached pods.\n"
+                    "2. Review SLA breaches: harassment reports at 12h (SLA: 4h) and hate_speech at 6h "
+                    "(SLA: 1h) are critical compliance violations — escalate to the T&S lead.\n"
+                    "3. Inspect GPU memory: `nvidia-smi` on inference nodes — if 2 nodes show OOM, the "
+                    "batch size for the classification model may need to be reduced.\n"
+                    "4. Remediate: issue `restart_report_workers` to recover crashed processors and "
+                    "`prioritize_sla_breached` to reorder the queue by SLA violation severity.\n"
+                    "5. Enable CPU-fallback inference for lower-priority categories (spam, exploits) to "
+                    "free GPU capacity for high-SLA categories (hate_speech, harassment)."
+                ),
+                "remediation_action": "restart_report_workers",
                 "error_message": "[T&S] MOD-REPORT-QUEUE-OVERFLOW: queue={report_queue_depth} rate={processing_rate}/min oldest={oldest_report_hours}h category={report_category}",
                 "stack_trace": (
                     "=== REPORT QUEUE STATUS ===\n"
@@ -705,6 +999,22 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["game-server", "matchmaking-engine"],
                 "cascade_services": ["analytics-pipeline", "chat-service"],
                 "description": "Game server tick rate drops below target causing gameplay lag, hit registration failures, and desync cascades",
+                "investigation_notes": (
+                    "Root cause: the game loop frame budget (15.6ms for 64Hz) is being exceeded because the "
+                    "physics system consumes 54% of tick time at 8.4ms. Combined with net_serialize at 27%, "
+                    "the server has no headroom and tick rate degrades under load.\n"
+                    "1. Profile per-system costs: physics at 8.4ms with 4,201 entities is the bottleneck — "
+                    "check if entity_count spiked due to spawned projectiles or dropped items not being GC'd.\n"
+                    "2. Review CPU metrics: 97.2% CPU means the server is saturated — verify no co-located "
+                    "processes are stealing cycles with `ps aux --sort=-%cpu | head -20`.\n"
+                    "3. Check memory: 84.1% memory usage may be causing swap pressure — verify with "
+                    "`vmstat 1 5` for si/so columns indicating swap activity.\n"
+                    "4. Remediate: issue `reduce_entity_budget` to cap active entities at 2,000 and force "
+                    "garbage collection of expired objects; disable non-essential AI to reclaim tick budget.\n"
+                    "5. Long-term: implement server-side LOD (level of detail) that reduces physics fidelity "
+                    "for distant entities and pauses AI updates for out-of-range NPCs."
+                ),
+                "remediation_action": "resync_world_state",
                 "error_message": "[Engine] ENGINE-TICKRATE-DEGRAD: server={server_id} tickrate={tick_rate}Hz target={target_tick_rate}Hz frame_time={frame_time_ms}ms players={active_players} match={match_id}",
                 "stack_trace": (
                     "=== SERVER PERFORMANCE PROFILER ===\n"
@@ -738,6 +1048,23 @@ class GamingScenario(BaseScenario):
                 "affected_services": ["matchmaking-engine", "auth-gateway"],
                 "cascade_services": ["game-server", "leaderboard-api", "analytics-pipeline"],
                 "description": "Player session migration between regional game server clusters fails during rebalancing or failover operations",
+                "investigation_notes": (
+                    "Root cause: the state transfer phase times out because the cross-region network path "
+                    "between {source_region} and {target_region} has elevated latency and 4.2% packet loss, "
+                    "causing the 84.2KB state payload to fail TCP delivery within the migration timeout.\n"
+                    "1. Check network path: `mtr -rwzbc 100 <target_region_endpoint>` from the source region "
+                    "to identify which hop introduces the latency and packet loss.\n"
+                    "2. Review migration phase: if failure is at 'transfer', it is network; if at 'injection', "
+                    "the target server rejected the state payload (version mismatch or schema change).\n"
+                    "3. Inspect payload size: 84.2KB with 247 inventory items is large — consider compressing "
+                    "the state payload (zstd typically achieves 3:1 on game state data).\n"
+                    "4. Remediate: issue `rollback_migration` to return the player to the source region, "
+                    "then retry with `migrate_with_reduced_payload` which strips non-essential state.\n"
+                    "5. Implement incremental migration: pre-replicate static player data (inventory, settings) "
+                    "to the target region asynchronously, so the live migration only transfers dynamic match "
+                    "state (~12.4KB), which is small enough to survive packet loss."
+                ),
+                "remediation_action": "rollback_migration",
                 "error_message": "[MM] MM-MIGRATION-FAIL: player={player_id} path={source_region}->{target_region} phase={migration_phase} session={session_id} latency={latency_ms}ms",
                 "stack_trace": (
                     "=== MIGRATION STATE TRANSFER LOG ===\n"
@@ -1069,6 +1396,203 @@ class GamingScenario(BaseScenario):
             AnalyticsPipelineService,
             ModerationEngineService,
         ]
+
+    # ── Trace Attributes & RCA ───────────────────────────────────────
+
+    def get_trace_attributes(self, service_name: str, rng) -> dict:
+        uptime_s = int(time.time()) % 86400
+        base = {
+            "game.region": rng.choice(["us-east", "us-west", "eu-west"]),
+            "game.platform": rng.choice(["PC", "CONSOLE", "MOBILE"]),
+        }
+        svc_attrs = {
+            "game-server": {
+                "game.tick_rate": rng.choice([64, 128, 30, 60]),
+                "game.active_players": rng.randint(10, 100),
+                "game.map_id": rng.choice(["MAP-NEON-CITY", "MAP-WASTELAND", "MAP-SKY-ARENA", "MAP-DEEP-SEA"]),
+            },
+            "matchmaking-engine": {
+                "matchmaking.queue_region": rng.choice(["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"]),
+                "matchmaking.skill_bracket": rng.choice(["bronze", "silver", "gold", "platinum", "diamond"]),
+            },
+            "content-delivery": {
+                "cdn.cache_hit_ratio": round(rng.uniform(0.60, 0.99), 2),
+                "cdn.edge_pop": rng.choice(["IAD", "SFO", "FRA", "NRT", "SYD", "GRU"]),
+            },
+            "chat-service": {
+                "chat.channel_type": rng.choice(["global", "guild", "party", "whisper", "system"]),
+                "chat.message_rate": rng.randint(10, 500),
+            },
+            "leaderboard-api": {
+                "leaderboard.season_id": rng.choice(["S12", "S13", "S14"]),
+                "leaderboard.update_lag_ms": rng.randint(5, 250),
+            },
+            "auth-gateway": {
+                "auth.method": rng.choice(["oauth-google", "oauth-discord", "oauth-steam", "email-password"]),
+                "auth.session_ttl_min": rng.choice([15, 30, 60, 120, 1440]),
+            },
+            "payment-processor": {
+                "payment.provider": rng.choice(["stripe", "paypal", "apple-iap", "google-play"]),
+                "payment.currency": rng.choice(["USD", "EUR", "GBP", "JPY", "BRL"]),
+            },
+            "analytics-pipeline": {
+                "analytics.event_type": rng.choice(["player_action", "match_result", "purchase", "session_start", "session_end"]),
+                "analytics.pipeline_lag_ms": rng.randint(50, 5000),
+            },
+            "moderation-engine": {
+                "moderation.queue_depth": rng.randint(0, 10000),
+                "moderation.model_version": rng.choice(["automod-v3.1", "automod-v3.2", "automod-v4.0-beta"]),
+            },
+        }
+        base.update(svc_attrs.get(service_name, {}))
+        return base
+
+    def get_rca_clues(self, channel: int, service_name: str, rng) -> dict:
+        clues = {
+            1: {  # Game State Desync
+                "game-server": {"net.udp_loss_pct": round(rng.uniform(3.0, 12.0), 1), "net.interp_delay_ms": rng.randint(50, 100)},
+                "matchmaking-engine": {"matchmaking.server_pool_exhausted": True, "matchmaking.fallback_region": rng.choice(["us-west-2", "eu-west-1"])},
+                "analytics-pipeline": {"analytics.desync_event_rate": rng.randint(50, 200), "analytics.data_quality": "degraded"},
+            },
+            2: {  # Physics Simulation Overflow
+                "game-server": {"physics.substep_count": 4, "physics.penetration_max_m": round(rng.uniform(0.5, 1.5), 2)},
+                "analytics-pipeline": {"analytics.physics_error_events": rng.randint(100, 500), "analytics.entity_density": "critical"},
+                "matchmaking-engine": {"matchmaking.affected_matches": rng.randint(5, 30)},
+            },
+            3: {  # Matchmaking Queue Overflow
+                "matchmaking-engine": {"matchmaking.enqueue_rate": rng.randint(200, 500), "matchmaking.dequeue_rate": rng.randint(50, 100)},
+                "game-server": {"game.server_pool_available": rng.randint(0, 5), "game.allocation_lag_ms": rng.randint(2000, 8000)},
+                "auth-gateway": {"auth.login_surge_detected": True, "auth.concurrent_sessions": rng.randint(50000, 150000)},
+                "analytics-pipeline": {"analytics.queue_depth_trend": "exponential_growth"},
+            },
+            4: {  # Skill Rating Calculation Error
+                "matchmaking-engine": {"matchmaking.glicko_convergence_iter": rng.randint(12, 20), "matchmaking.sigma_unclamped": True},
+                "leaderboard-api": {"leaderboard.out_of_range_players": rng.randint(10, 200), "leaderboard.season_integrity": "compromised"},
+                "analytics-pipeline": {"analytics.rating_anomaly_count": rng.randint(50, 300)},
+            },
+            5: {  # CDN Cache Miss Storm
+                "content-delivery": {"cdn.ttl_alignment_detected": True, "cdn.origin_rps": rng.randint(5000, 15000)},
+                "game-server": {"game.asset_load_timeout_pct": round(rng.uniform(5.0, 30.0), 1), "game.client_crash_rate": round(rng.uniform(0.5, 3.0), 1)},
+                "analytics-pipeline": {"analytics.cdn_error_events": rng.randint(1000, 5000)},
+            },
+            6: {  # Asset Bundle Corruption
+                "content-delivery": {"cdn.corrupt_chunk_offset": rng.randint(50000000, 200000000), "cdn.edge_tcp_resets": rng.randint(5, 30)},
+                "game-server": {"game.bundle_load_failures": rng.randint(50, 500), "game.client_redownloads": rng.randint(20, 200)},
+                "moderation-engine": {"moderation.asset_scan_status": "bypassed"},
+            },
+            7: {  # Chat Message Flood
+                "chat-service": {"chat.bot_suspect_accounts": rng.randint(5, 50), "chat.channel_aggregate_rate": rng.randint(500, 2000)},
+                "moderation-engine": {"moderation.automod_cpu_pct": round(rng.uniform(85, 99), 1), "moderation.dropped_scans": rng.randint(100, 1000)},
+                "auth-gateway": {"auth.new_account_rate": rng.randint(50, 200), "auth.captcha_challenge_rate": round(rng.uniform(0.1, 5.0), 1)},
+            },
+            8: {  # Voice Channel Degradation
+                "chat-service": {"voice.mixer_cpu_pct": round(rng.uniform(80, 99), 1), "voice.codec_downgrade": True},
+                "game-server": {"game.voice_disconnect_count": rng.randint(10, 100), "game.team_comm_degraded": True},
+                "analytics-pipeline": {"analytics.voice_quality_events": rng.randint(200, 1000)},
+            },
+            9: {  # Leaderboard Corruption
+                "leaderboard-api": {"leaderboard.redis_aof_rewrite": True, "leaderboard.zadd_race_detected": True},
+                "game-server": {"game.rank_display_stale": True, "game.score_submit_retries": rng.randint(3, 10)},
+                "analytics-pipeline": {"analytics.rank_anomaly_events": rng.randint(100, 500)},
+                "moderation-engine": {"moderation.rank_exploit_check": "inconclusive"},
+            },
+            10: {  # Season Pass Progression Sync Error
+                "leaderboard-api": {"leaderboard.xp_event_delivery": "at-most-once", "leaderboard.missed_xp_events": rng.randint(100, 2000)},
+                "payment-processor": {"payment.premium_pass_affected": True, "payment.refund_risk": rng.choice(["low", "medium", "high"])},
+                "analytics-pipeline": {"analytics.xp_pipeline_lag_s": rng.randint(30, 300)},
+            },
+            11: {  # OAuth Token Refresh Storm
+                "auth-gateway": {"auth.expiring_tokens_5min_pct": round(rng.uniform(40, 75), 1), "auth.jwks_cache_age_s": rng.randint(200, 600)},
+                "game-server": {"game.session_validation_failures": rng.randint(500, 5000), "game.forced_relogin_count": rng.randint(100, 1000)},
+                "matchmaking-engine": {"matchmaking.auth_timeout_pct": round(rng.uniform(10, 50), 1)},
+                "chat-service": {"chat.disconnected_users": rng.randint(500, 5000)},
+            },
+            12: {  # Account Takeover Detection Spike
+                "auth-gateway": {"auth.credential_stuffing_detected": True, "auth.bad_ip_reputation_pct": round(rng.uniform(70, 95), 1)},
+                "payment-processor": {"payment.fraudulent_purchase_attempts": rng.randint(10, 100), "payment.wallet_freeze_count": rng.randint(5, 50)},
+                "moderation-engine": {"moderation.ato_flagged_accounts": rng.randint(20, 200)},
+                "analytics-pipeline": {"analytics.security_event_surge": True},
+            },
+            13: {  # In-App Purchase Processing Failure
+                "payment-processor": {"payment.provider_latency_ms": rng.randint(3000, 12000), "payment.circuit_breaker_state": rng.choice(["HALF_OPEN", "OPEN"])},
+                "auth-gateway": {"auth.purchase_identity_verify": "timeout", "auth.token_valid": True},
+                "analytics-pipeline": {"analytics.failed_txn_count": rng.randint(100, 2000)},
+            },
+            14: {  # Virtual Currency Ledger Inconsistency
+                "payment-processor": {"payment.ledger_race_condition": True, "payment.duplicate_txn_suspected": True},
+                "leaderboard-api": {"leaderboard.reward_delivery_stalled": True, "leaderboard.affected_players": rng.randint(10, 500)},
+                "moderation-engine": {"moderation.fraud_investigation_queued": True},
+                "analytics-pipeline": {"analytics.ledger_discrepancy_count": rng.randint(10, 200)},
+            },
+            15: {  # Event Ingestion Pipeline Lag
+                "analytics-pipeline": {"analytics.kafka_consumers_dead": rng.randint(2, 6), "analytics.partition_stalled": rng.choice(["partition-0", "partition-1", "partition-2", "partition-3"])},
+                "game-server": {"game.telemetry_buffer_pct": round(rng.uniform(70, 95), 1), "game.event_drop_rate_pct": round(rng.uniform(1, 15), 1)},
+                "leaderboard-api": {"leaderboard.rank_update_delay_s": rng.randint(30, 300)},
+            },
+            16: {  # Player Telemetry Buffer Overflow
+                "analytics-pipeline": {"analytics.ring_buffer_writable_slots": rng.randint(100, 1000), "analytics.consumer_drain_lag_ms": rng.randint(500, 5000)},
+                "game-server": {"game.anticheat_data_gap": True, "game.movement_events_dropped_pct": round(rng.uniform(5, 25), 1)},
+                "matchmaking-engine": {"matchmaking.player_stats_stale": True},
+            },
+            17: {  # Auto-Moderation False Positive Storm
+                "moderation-engine": {"moderation.model_precision": round(rng.uniform(0.30, 0.50), 2), "moderation.hate_speech_fp_rate_pct": round(rng.uniform(20, 45), 1)},
+                "chat-service": {"chat.silenced_players": rng.randint(500, 5000), "chat.appeal_queue_depth": rng.randint(200, 2000)},
+                "analytics-pipeline": {"analytics.moderation_accuracy_alert": True},
+            },
+            18: {  # Report Queue Overflow
+                "moderation-engine": {"moderation.workers_crashed": rng.randint(4, 10), "moderation.gpu_inference_status": "OOM"},
+                "chat-service": {"chat.unmoderated_messages_pct": round(rng.uniform(10, 40), 1), "chat.report_button_clicks": rng.randint(1000, 10000)},
+                "auth-gateway": {"auth.flagged_account_backlog": rng.randint(100, 1000)},
+            },
+            19: {  # Server Tick Rate Degradation
+                "game-server": {"game.physics_tick_budget_pct": round(rng.uniform(45, 65), 1), "game.entity_count": rng.randint(3000, 6000)},
+                "matchmaking-engine": {"matchmaking.server_health_score": round(rng.uniform(0.2, 0.5), 2), "matchmaking.rebalance_triggered": True},
+                "analytics-pipeline": {"analytics.perf_alert_count": rng.randint(50, 200)},
+                "chat-service": {"chat.voice_server_colocated": True, "chat.voice_quality_impacted": True},
+            },
+            20: {  # Cross-Region Player Migration Failure
+                "matchmaking-engine": {"matchmaking.migration_timeout_ms": rng.randint(5000, 30000), "matchmaking.cross_region_packet_loss_pct": round(rng.uniform(2, 8), 1)},
+                "auth-gateway": {"auth.session_transfer_status": "failed", "auth.token_region_mismatch": True},
+                "game-server": {"game.state_payload_kb": round(rng.uniform(40, 120), 1), "game.migration_rollback": True},
+                "leaderboard-api": {"leaderboard.cross_region_sync": "stalled"},
+                "analytics-pipeline": {"analytics.migration_failure_events": rng.randint(10, 100)},
+            },
+        }
+        channel_clues = clues.get(channel, {})
+        return channel_clues.get(service_name, {})
+
+    def get_correlation_attribute(self, channel: int, is_error: bool, rng) -> dict:
+        correlation_attrs = {
+            1: ("deployment.server_build", "game-server-v7.2.1-canary"),
+            2: ("infra.gpu_driver", "nvidia-535.129.03-beta"),
+            3: ("deployment.matchmaker_config", "mm-config-v4.1.0-experimental"),
+            4: ("runtime.glicko_impl", "glicko2-v3.0.1-unclamped"),
+            5: ("deployment.cdn_edge_config", "edge-config-v2.8.0-rc1"),
+            6: ("infra.nic_firmware", "mellanox-cx6-fw-22.39.1014"),
+            7: ("network.rate_limiter_config", "rl-config-v3.2-relaxed"),
+            8: ("infra.audio_codec_lib", "opus-1.4.0-custom-build"),
+            9: ("deployment.redis_config", "redis-7.2.4-aof-experimental"),
+            10: ("runtime.kafka_consumer_config", "consumer-v2.1.0-at-most-once"),
+            11: ("infra.ntp_source", "chrony-4.5-gps-backup"),
+            12: ("network.waf_ruleset", "waf-rules-v8.1.0-permissive"),
+            13: ("deployment.payment_sdk", "stripe-sdk-v12.1.0-rc2"),
+            14: ("runtime.db_isolation_level", "read-committed-optimistic"),
+            15: ("infra.kafka_broker_version", "kafka-3.7.0-kraft-unstable"),
+            16: ("deployment.ring_buffer_config", "ringbuf-v2.0.0-no-backpressure"),
+            17: ("deployment.automod_model", "nlp-classifier-v4.0-beta-sensitive"),
+            18: ("infra.gpu_memory_config", "a100-40gb-batch-oversized"),
+            19: ("network.routing_policy", "ecmp-4path-asymmetric"),
+            20: ("network.cross_region_vpn", "wireguard-v1.0.20241201-mtu1400"),
+        }
+        attr_key, attr_val = correlation_attrs.get(channel, ("deployment.config_version", "unknown"))
+        # 90% on errors, 5% on healthy
+        if is_error:
+            if rng.random() < 0.90:
+                return {attr_key: attr_val}
+        else:
+            if rng.random() < 0.05:
+                return {attr_key: attr_val}
+        return {}
 
     # ── Fault Parameters ──────────────────────────────────────────────
 
