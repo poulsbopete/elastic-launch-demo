@@ -121,24 +121,14 @@
 
     function populateDropdown(data) {
         const select = document.getElementById('channel-select');
+        if (select.options.length > 1) return; // already built
+
         const sortedIds = Object.keys(data).map(Number).sort((a, b) => a - b);
-
-        // Build options once on first call
-        if (select.options.length <= 1) {
-            for (const id of sortedIds) {
-                const opt = document.createElement('option');
-                opt.value = id;
-                select.appendChild(opt);
-            }
-        }
-
-        // Update text in-place (no rebuild); never disable options
-        for (let i = 1; i < select.options.length; i++) {
-            const opt = select.options[i];
-            const ch = data[opt.value];
-            if (!ch) continue;
-            const label = `CH-${String(opt.value).padStart(2, '0')}: ${ch.name}`;
-            opt.textContent = ch.state === 'ACTIVE' ? label + ' [IN USE]' : label;
+        for (const id of sortedIds) {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = `CH-${String(id).padStart(2, '0')}: ${data[id].name}`;
+            select.appendChild(opt);
         }
     }
 
@@ -338,13 +328,11 @@
     let spikeDebounceTimer = null;
 
     function updateSpikesLock() {
+        const locked = myOwnedChannels.size === 0;
         const panel = document.querySelector('.spikes-panel');
-        if (!panel) return;
-        if (myOwnedChannels.size === 0) {
-            panel.classList.add('locked');
-        } else {
-            panel.classList.remove('locked');
-        }
+        if (panel) panel.classList.toggle('locked', locked);
+        const duSection = document.querySelector('.daily-update-section');
+        if (duSection) duSection.classList.toggle('locked', locked);
     }
 
     function initSpikes() {

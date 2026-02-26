@@ -301,15 +301,15 @@ def make_metric_palette(thresholds):
 # ── Threshold palettes for metric tiles ───────────────────────────────────────
 # Green → Yellow → Red as values climb
 PALETTE_ERRORS = make_metric_palette([
-    ("#54B399", 5),     # green: 0-5 errors
-    ("#D6BF57", 15),    # yellow: 5-15 errors
-    ("#E7664C", 9999),  # red: 15+ errors
+    ("#54B399", 2),     # green: 0-2 errors
+    ("#D6BF57", 5),     # yellow: 2-5 errors
+    ("#E7664C", 9999),  # red: 5+ errors
 ])
 
 PALETTE_ERROR_RATE = make_metric_palette([
-    ("#54B399", 0.05),  # green: 0-5%
-    ("#D6BF57", 0.10),  # yellow: 5-10%
-    ("#E7664C", 1.0),   # red: 10%+
+    ("#54B399", 0.02),  # green: 0-2%
+    ("#D6BF57", 0.05),  # yellow: 2-5%
+    ("#E7664C", 1.0),   # red: 5%+
 ])
 
 PALETTE_THROUGHPUT = make_metric_palette([
@@ -319,21 +319,21 @@ PALETTE_THROUGHPUT = make_metric_palette([
 ])
 
 PALETTE_LATENCY_P99 = make_metric_palette([
-    ("#54B399", 1_000_000_000),   # green: < 1s
-    ("#D6BF57", 10_000_000_000),  # yellow: 1-10s
-    ("#E7664C", 999_000_000_000), # red: > 10s
-])
-
-PALETTE_LATENCY_P50 = make_metric_palette([
     ("#54B399", 500_000_000),     # green: < 500ms
     ("#D6BF57", 2_000_000_000),   # yellow: 500ms-2s
     ("#E7664C", 999_000_000_000), # red: > 2s
 ])
 
+PALETTE_LATENCY_P50 = make_metric_palette([
+    ("#54B399", 200_000_000),     # green: < 200ms
+    ("#D6BF57", 800_000_000),     # yellow: 200ms-800ms
+    ("#E7664C", 999_000_000_000), # red: > 800ms
+])
+
 PALETTE_CPU = make_metric_palette([
-    ("#54B399", 0.60),  # green: < 60%
-    ("#D6BF57", 0.80),  # yellow: 60-80%
-    ("#E7664C", 1.0),   # red: > 80%
+    ("#54B399", 0.40),  # green: < 40%
+    ("#D6BF57", 0.60),  # yellow: 40-60%
+    ("#E7664C", 1.0),   # red: > 60%
 ])
 
 
@@ -1174,7 +1174,7 @@ def _build_dashboard_ndjson(
             },
             "panelsJSON": json.dumps(panels),
             "refreshInterval": {"pause": False, "value": 10000},
-            "timeFrom": "now-15m",
+            "timeFrom": "now-2m",
             "timeRestore": True,
             "timeTo": "now",
             "title": f"{scenario_name} Executive Dashboard",
