@@ -67,7 +67,7 @@ Choose from 6 industry verticals — space launch, sports streaming, financial s
 | financial | Financial Services Platform | Financial Services | finserv |
 | healthcare | Healthcare Platform | Healthcare | healthcare |
 | gaming | Gaming Platform | Gaming | gaming |
-| usaa | USAA Platform | Insurance / Banking | usaa |
+| banking | Retail Banking Platform | Insurance / Banking | banking |
 
 Each scenario provides its own services, fault channels, UI theme, terminology, and countdown configuration. The scenario framework (`scenarios/base.py`) defines the interface; each scenario directory implements it.
 
@@ -258,7 +258,7 @@ elastic-launch-demo/
 │   ├── financial/                   # Financial services scenario
 │   ├── healthcare/                  # Healthcare scenario
 │   ├── gaming/                      # Gaming scenario
-│   └── usaa/                        # Insurance/banking scenario
+│   └── banking/                     # Insurance/banking scenario
 ├── log_generators/
 │   ├── host_metrics_generator.py    # system.* host metrics (3 hosts)
 │   ├── k8s_metrics_generator.py     # Kubernetes node/pod/container metrics

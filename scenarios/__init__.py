@@ -29,7 +29,7 @@ def _discover() -> None:
         "scenarios.financial.scenario",
         "scenarios.healthcare.scenario",
         "scenarios.gaming.scenario",
-        "scenarios.usaa.scenario",
+        "scenarios.banking.scenario",
         "scenarios.gcp.scenario",
     ]
 

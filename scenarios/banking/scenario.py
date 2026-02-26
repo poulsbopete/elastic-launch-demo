@@ -1,5 +1,5 @@
-"""USAA Member Services Platform scenario — military financial services with mobile banking,
-insurance claims processing, fraud detection, and member authentication."""
+"""Retail Banking Platform scenario — financial services with mobile banking,
+insurance claims processing, fraud detection, and customer authentication."""
 
 from __future__ import annotations
 
@@ -10,30 +10,30 @@ from typing import Any
 from scenarios.base import BaseScenario, CountdownConfig, UITheme
 
 
-class USAAScenario(BaseScenario):
-    """USAA member services platform with 9 services and 20 fault channels."""
+class BankingScenario(BaseScenario):
+    """Retail banking platform with 9 services and 20 fault channels."""
 
     # ── Identity ──────────────────────────────────────────────────────
 
     @property
     def scenario_id(self) -> str:
-        return "usaa"
+        return "banking"
 
     @property
     def scenario_name(self) -> str:
-        return "USAA Member Services Platform"
+        return "Retail Banking Platform"
 
     @property
     def scenario_description(self) -> str:
         return (
-            "Military financial services platform with mobile banking, insurance "
-            "claims processing, policy management, fraud detection, and member "
-            "authentication. Serving 13M+ military members and families."
+            "Retail banking platform with mobile banking, insurance "
+            "claims processing, policy management, fraud detection, and customer "
+            "authentication. Serving millions of customers and families."
         )
 
     @property
     def namespace(self) -> str:
-        return "usaa"
+        return "banking"
 
     # ── Services ──────────────────────────────────────────────────────
 
@@ -139,7 +139,7 @@ class USAAScenario(BaseScenario):
                     "3. Inspect circuit breaker state: HALF_OPEN means the gateway is testing recovery. If stuck in HALF_OPEN "
                     "for >60s, the upstream service is intermittently failing. Check: /actuator/health for dependency status.\n"
                     "4. Queue depth >2000 indicates backpressure buildup — consider scaling mobile-gateway replicas or "
-                    "enabling request shedding. Check HPA metrics: kubectl get hpa mobile-gateway -n usaa-prod.\n"
+                    "enabling request shedding. Check HPA metrics: kubectl get hpa mobile-gateway -n banking-prod.\n"
                     "5. Verify CACHE_STALE fallback is returning acceptable data — stale cached responses may show "
                     "incorrect balances. Review cache TTL settings in mobile-gateway ConfigMap."
                 ),
@@ -341,7 +341,7 @@ class USAAScenario(BaseScenario):
                     "4. BSA/AML compliance requirements: SAR filing must be evaluated within 24h SLA. If the wire exceeds $10K, "
                     "verify CTR filing status. Check 314(b) information sharing requests from FinCEN.\n"
                     "5. Do NOT release the wire without BSA officer sign-off — OFAC violations carry strict liability penalties "
-                    "up to $20M per violation. Escalate to BSA team: bsa-review@usaa.com with wire reference number."
+                    "up to $20M per violation. Escalate to BSA team: bsa-review@bankops.internal with wire reference number."
                 ),
                 "remediation_action": "escalate_bsa_review",
                 "error_message": "[PAY] PAY-OFAC-BLOCK: wire={wire_id} amount=${wire_amount} member={member_id} match_score={ofac_score} list={ofac_list}",
@@ -354,7 +354,7 @@ class USAAScenario(BaseScenario):
                     "  member_name='{member_name}'  sdn_entry='{ofac_match_name}'\n"
                     "  country={wire_country}  program=SDGT\n"
                     "--- WIRE DETAILS ---\n"
-                    "  originator=USAA_FSB  beneficiary_bank={beneficiary_bank}\n"
+                    "  originator=RETAIL_BANK_FSB  beneficiary_bank={beneficiary_bank}\n"
                     "  swift_code={swift_code}  purpose={wire_purpose}\n"
                     "  fedwire_ref=FW{wire_id}\n"
                     "--- BSA REQUIREMENTS ---\n"
@@ -604,7 +604,7 @@ class USAAScenario(BaseScenario):
                     "Flag applications where expected=APPROVE but actual=DECLINE for priority review — these represent "
                     "members being incorrectly denied coverage.\n"
                     "6. Consider rules engine rollback if conflict rate doesn't stabilize within 1 hour. "
-                    "Rollback command: kubectl rollout undo deployment/rules-engine -n usaa-underwriting."
+                    "Rollback command: kubectl rollout undo deployment/rules-engine -n banking-underwriting."
                 ),
                 "remediation_action": "rollback_rules_engine",
                 "error_message": "[UW] UW-RULES-ENGINE-ERR: application={app_id} product={insurance_product} rule={failed_rule} expected={expected_decision} actual={actual_decision}",
@@ -817,14 +817,14 @@ class USAAScenario(BaseScenario):
                 "description": "Mass member session invalidation causing authentication storm and portal outage",
                 "investigation_notes": (
                     "1. Redis cluster primary failure caused the session store to lose all active sessions. Check Redis "
-                    "sentinel logs: redis-cli -p 26379 SENTINEL get-master-addr-by-name usaa-sessions.\n"
+                    "sentinel logs: redis-cli -p 26379 SENTINEL get-master-addr-by-name banking-sessions.\n"
                     "2. Thundering herd problem: reauth rate exceeds auth-gateway capacity (rate vs 500/min). "
                     "Implement token extension — issue new JWT tokens with extended TTL to surviving sessions without "
                     "requiring full re-authentication.\n"
                     "3. Circuit breaker on auth-gateway opened at T+12s — this prevents total auth system collapse but "
                     "blocks all new logins. Set circuit breaker to HALF_OPEN with 10% traffic sampling.\n"
                     "4. Redis cluster recovery: verify replicas 2/3 are healthy, promote a replica to primary. "
-                    "Command: redis-cli -p 26379 SENTINEL failover usaa-sessions. Estimated recovery 5min.\n"
+                    "Command: redis-cli -p 26379 SENTINEL failover banking-sessions. Estimated recovery 5min.\n"
                     "5. Rate limit re-authentication attempts with exponential backoff on the client side — mobile app "
                     "and portal should retry with jitter to prevent synchronized retry storms.\n"
                     "6. Post-incident: implement session persistence to a secondary store (DynamoDB/Elasticache Global) "
@@ -864,7 +864,7 @@ class USAAScenario(BaseScenario):
                     "1. Check S3 upload failure type: S3_WRITE_TIMEOUT indicates network latency to S3 endpoint — verify "
                     "VPC endpoint configuration and S3 gateway endpoint health in us-east-1.\n"
                     "2. BUCKET_QUOTA_EXCEEDED means storage limits hit — check bucket metrics: aws s3api head-bucket "
-                    "--bucket usaa-member-docs-prod. Request quota increase or implement lifecycle policy for old documents.\n"
+                    "--bucket banking-member-docs-prod. Request quota increase or implement lifecycle policy for old documents.\n"
                     "3. ENCRYPTION_KEY_ERROR indicates KMS key access issue — verify the document-vault service role has "
                     "kms:GenerateDataKey and kms:Decrypt permissions. Check KMS key rotation status.\n"
                     "4. PII detection pipeline is working (ssn=REDACTED, dob=REDACTED) but uploads are blocking at S3. "
@@ -891,7 +891,7 @@ class USAAScenario(BaseScenario):
                     "  index_metadata      SKIPPED     ---\n"
                     "  ocr_extract         SKIPPED     ---\n"
                     "--- STORAGE HEALTH ---\n"
-                    "  s3_bucket=usaa-member-docs-prod  region=us-east-1\n"
+                    "  s3_bucket=banking-member-docs-prod  region=us-east-1\n"
                     "  error={upload_error}  retry=3/3\n"
                     "  queue_depth=2,847  oldest_pending=12min\n"
                     "ACTION: retry_upload=true  enable_local_cache=true  alert=DOC-UPLOAD-FAIL"
@@ -959,7 +959,7 @@ class USAAScenario(BaseScenario):
                     "4. Check cert-manager pod health in Kubernetes: kubectl get pods -n cert-manager -o wide. If cert-manager "
                     "is DEGRADED, manually install the cert: kubectl create secret tls {domain}-tls --cert=cert.pem --key=key.pem.\n"
                     "5. For mTLS-dependent services (payment-engine), the intermediate CA must also be valid. Check the "
-                    "full certificate chain: openssl s_client -connect api.usaa.com:443 -showcerts.\n"
+                    "full certificate chain: openssl s_client -connect api.retailbank.com:443 -showcerts.\n"
                     "6. Post-incident: implement certificate expiration monitoring at 30/14/7/3/1 day thresholds. "
                     "Add cert-monitor alert rule to prevent future expiration cascades."
                 ),
@@ -1112,7 +1112,7 @@ class USAAScenario(BaseScenario):
     def hosts(self) -> list[dict[str, Any]]:
         return [
             {
-                "host.name": "usaa-aws-host-01",
+                "host.name": "banking-aws-host-01",
                 "host.id": "i-0a1b2c3d4e5f67890",
                 "host.arch": "amd64",
                 "host.type": "r6i.2xlarge",
@@ -1138,7 +1138,7 @@ class USAAScenario(BaseScenario):
                 "disk_total_bytes": 500 * 1024 * 1024 * 1024,
             },
             {
-                "host.name": "usaa-gcp-host-01",
+                "host.name": "banking-gcp-host-01",
                 "host.id": "4567890123456789012",
                 "host.arch": "amd64",
                 "host.type": "n2-standard-8",
@@ -1157,15 +1157,15 @@ class USAAScenario(BaseScenario):
                 "cloud.platform": "gcp_compute_engine",
                 "cloud.region": "us-central1",
                 "cloud.availability_zone": "us-central1-a",
-                "cloud.account.id": "usaa-member-services-prod",
+                "cloud.account.id": "banking-member-services-prod",
                 "cloud.instance.id": "4567890123456789012",
                 "cpu_count": 8,
                 "memory_total_bytes": 32 * 1024 * 1024 * 1024,
                 "disk_total_bytes": 256 * 1024 * 1024 * 1024,
             },
             {
-                "host.name": "usaa-azure-host-01",
-                "host.id": "/subscriptions/abc-123/resourceGroups/usaa-rg/providers/Microsoft.Compute/virtualMachines/usaa-vm-01",
+                "host.name": "banking-azure-host-01",
+                "host.id": "/subscriptions/abc-123/resourceGroups/banking-rg/providers/Microsoft.Compute/virtualMachines/banking-vm-01",
                 "host.arch": "amd64",
                 "host.type": "Standard_D8s_v5",
                 "host.image.id": "Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest",
@@ -1184,7 +1184,7 @@ class USAAScenario(BaseScenario):
                 "cloud.region": "eastus",
                 "cloud.availability_zone": "eastus-1",
                 "cloud.account.id": "abc-123-def-456",
-                "cloud.instance.id": "usaa-vm-01",
+                "cloud.instance.id": "banking-vm-01",
                 "cpu_count": 8,
                 "memory_total_bytes": 32 * 1024 * 1024 * 1024,
                 "disk_total_bytes": 512 * 1024 * 1024 * 1024,
@@ -1195,7 +1195,7 @@ class USAAScenario(BaseScenario):
     def k8s_clusters(self) -> list[dict[str, Any]]:
         return [
             {
-                "name": "usaa-eks-cluster",
+                "name": "banking-eks-cluster",
                 "provider": "aws",
                 "platform": "aws_eks",
                 "region": "us-east-1",
@@ -1204,7 +1204,7 @@ class USAAScenario(BaseScenario):
                 "services": ["mobile-gateway", "claims-processor", "payment-engine"],
             },
             {
-                "name": "usaa-gke-cluster",
+                "name": "banking-gke-cluster",
                 "provider": "gcp",
                 "platform": "gcp_gke",
                 "region": "us-central1",
@@ -1213,7 +1213,7 @@ class USAAScenario(BaseScenario):
                 "services": ["policy-manager", "fraud-sentinel", "auth-gateway"],
             },
             {
-                "name": "usaa-aks-cluster",
+                "name": "banking-aks-cluster",
                 "provider": "azure",
                 "platform": "azure_aks",
                 "region": "eastus",
@@ -1244,7 +1244,7 @@ class USAAScenario(BaseScenario):
             font_mono="'JetBrains Mono', 'Fira Code', monospace",
             dashboard_title="Member Services Operations Center",
             chaos_title="Incident Simulator",
-            landing_title="USAA Member Services Platform",
+            landing_title="Retail Banking Platform",
             service_label="Service",
             channel_label="Channel",
         )
@@ -1258,12 +1258,12 @@ class USAAScenario(BaseScenario):
     @property
     def agent_config(self) -> dict[str, Any]:
         return {
-            "id": "usaa-ops-analyst",
+            "id": "banking-ops-analyst",
             "name": "Member Services Operations Analyst",
             "assessment_tool_name": "member_services_assessment",
             "system_prompt": (
                 "You are the Member Services Operations Analyst, an expert AI assistant for "
-                "USAA's military financial services platform. You help operations teams "
+                "the retail banking platform. You help operations teams "
                 "investigate incidents, analyze service health, and provide root cause analysis "
                 "for fault conditions across 9 member services spanning AWS, GCP, and Azure. "
                 "You have deep expertise in mobile banking operations, insurance claims processing "
@@ -1308,15 +1308,15 @@ class USAAScenario(BaseScenario):
     # ── Service Classes ───────────────────────────────────────────────
 
     def get_service_classes(self) -> list[type]:
-        from scenarios.usaa.services.mobile_gateway import MobileGatewayService
-        from scenarios.usaa.services.claims_processor import ClaimsProcessorService
-        from scenarios.usaa.services.payment_engine import PaymentEngineService
-        from scenarios.usaa.services.policy_manager import PolicyManagerService
-        from scenarios.usaa.services.fraud_sentinel import FraudSentinelService
-        from scenarios.usaa.services.auth_gateway import AuthGatewayService
-        from scenarios.usaa.services.quote_engine import QuoteEngineService
-        from scenarios.usaa.services.member_portal import MemberPortalService
-        from scenarios.usaa.services.document_vault import DocumentVaultService
+        from scenarios.banking.services.mobile_gateway import MobileGatewayService
+        from scenarios.banking.services.claims_processor import ClaimsProcessorService
+        from scenarios.banking.services.payment_engine import PaymentEngineService
+        from scenarios.banking.services.policy_manager import PolicyManagerService
+        from scenarios.banking.services.fraud_sentinel import FraudSentinelService
+        from scenarios.banking.services.auth_gateway import AuthGatewayService
+        from scenarios.banking.services.quote_engine import QuoteEngineService
+        from scenarios.banking.services.member_portal import MemberPortalService
+        from scenarios.banking.services.document_vault import DocumentVaultService
 
         return [
             MobileGatewayService,
@@ -1567,7 +1567,7 @@ class USAAScenario(BaseScenario):
             "/api/v1/mobile/claims", "/api/v1/mobile/insurance",
         ]
         payee_names = [
-            "USAA Auto Insurance", "Navy Federal CU", "AT&T Wireless",
+            "Auto Insurance Premium", "Credit Union Transfer", "AT&T Wireless",
             "GEICO", "State Farm", "Mortgage Company", "Electric Utility",
             "Water Authority", "Comcast", "Progressive Insurance",
         ]
@@ -1618,11 +1618,11 @@ class USAAScenario(BaseScenario):
             "ENCRYPTION_KEY_ERROR", "NETWORK_TIMEOUT",
         ]
         cert_domains = [
-            "mobile.usaa.com", "api.usaa.com", "auth.usaa.com",
-            "portal.usaa.com", "claims.usaa.com",
+            "mobile.retailbank.com", "api.retailbank.com", "auth.retailbank.com",
+            "portal.retailbank.com", "claims.retailbank.com",
         ]
         cert_issuers = ["DigiCert", "AWS_ACM", "Let's_Encrypt"]
-        db_clusters = ["usaa-aurora-payments", "usaa-aurora-members", "usaa-aurora-claims"]
+        db_clusters = ["banking-aurora-payments", "banking-aurora-members", "banking-aurora-claims"]
         wire_countries = ["AE", "DE", "JP", "KR", "GB", "IT"]
         beneficiary_banks = [
             "Deutsche Bank", "Barclays", "MUFG Bank",
@@ -1807,4 +1807,4 @@ class USAAScenario(BaseScenario):
 
 
 # Module-level instance for registry discovery
-scenario = USAAScenario()
+scenario = BankingScenario()

@@ -25,7 +25,7 @@ Pick the scenario that best fits your audience:
 |----------|---------------------|-----|
 | General / Technical | **Space** (NOVA-7 Launch Control) | Dramatic, easy to understand, great visuals |
 | Sports / Media | **Fanatics** (Fanatics Live) | Live streaming, real-time engagement |
-| Banking / Finance | **Financial** or **USAA** | Trading systems, compliance, fraud detection |
+| Banking / Finance | **Financial** or **Banking** | Trading systems, compliance, fraud detection |
 | Healthcare / Life Sciences | **Healthcare** | Patient systems, regulatory, clinical data |
 | Gaming / Entertainment | **Gaming** | Real-time multiplayer, matchmaking, payments |
 
