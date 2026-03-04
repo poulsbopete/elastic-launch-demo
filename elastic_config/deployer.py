@@ -461,8 +461,28 @@ class ScenarioDeployer:
         configured = []
         errors = []
 
-        # 1. Enable wired streams
+        # 1. Enable wired streams (disable/re-enable cycle ensures logs.otel is wired)
         try:
+            # Check current status first
+            status_resp = client.get(
+                f"{self.kibana_url}/api/streams/_status",
+                headers=_kibana_headers(self.api_key),
+            )
+            needs_cycle = True
+            if status_resp.status_code < 300:
+                status = status_resp.json()
+                # If logs.otel is already wired, no cycle needed
+                if status.get("logs.otel") is True:
+                    needs_cycle = False
+
+            if needs_cycle:
+                # Disable first to clear stale state
+                client.post(
+                    f"{self.kibana_url}/api/streams/_disable",
+                    headers=_kibana_headers(self.api_key),
+                    json={},
+                )
+
             resp = client.post(
                 f"{self.kibana_url}/api/streams/_enable",
                 headers=_kibana_headers(self.api_key),
@@ -615,7 +635,7 @@ steps:
     type: elasticsearch.esql.query
     with:
       query: >
-        FROM logs,logs.*
+        FROM logs.otel,logs.otel.*
         | WHERE @timestamp > NOW() - 15 MINUTES AND severity_text == "ERROR"
         | STATS total_errors = COUNT(*)
       format: json
@@ -988,7 +1008,7 @@ steps:
 - Log message field is `body.text` — NEVER use `body` alone (causes "Unknown column [body]")
 - NEVER use `message` — this field DOES NOT EXIST. The correct field is `body.text`
 - Service name field is `service.name`
-- Always query FROM logs,logs.* (includes sub-streams)
+- Always query FROM logs.otel,logs.otel.* (includes sub-streams)
 - Use LIKE or KQL() for text matching — NEVER use MATCH()
 
 ## Tool Selection Guide
@@ -1170,7 +1190,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
 
         if operations:
             resp = client.post(
-                f"{self.kibana_url}/api/streams/logs/queries/_bulk",
+                f"{self.kibana_url}/api/streams/logs.otel/queries/_bulk",
                 headers=_kibana_headers(self.api_key),
                 json={"operations": operations},
             )
@@ -1489,7 +1509,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
         # Delete stream queries with ANY known namespace prefix
         try:
             resp = client.get(
-                f"{self.kibana_url}/api/streams/logs/queries",
+                f"{self.kibana_url}/api/streams/logs.otel/queries",
                 headers=_kibana_headers(self.api_key),
             )
             if resp.status_code < 300:
@@ -1500,7 +1520,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
                     for ns in all_namespaces:
                         if qid.startswith(f"{ns}-se-"):
                             client.delete(
-                                f"{self.kibana_url}/api/streams/logs/queries/{qid}",
+                                f"{self.kibana_url}/api/streams/logs.otel/queries/{qid}",
                                 headers=_kibana_headers(self.api_key),
                             )
                             deleted += 1
@@ -1726,7 +1746,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
         """Delete stream queries for this namespace."""
         try:
             resp = client.get(
-                f"{self.kibana_url}/api/streams/logs/queries",
+                f"{self.kibana_url}/api/streams/logs.otel/queries",
                 headers=_kibana_headers(self.api_key),
             )
             if resp.status_code < 300:
@@ -1736,7 +1756,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
                     qid = q.get("id", "")
                     if qid.startswith(f"{self.ns}-se-"):
                         client.delete(
-                            f"{self.kibana_url}/api/streams/logs/queries/{qid}",
+                            f"{self.kibana_url}/api/streams/logs.otel/queries/{qid}",
                             headers=_kibana_headers(self.api_key),
                         )
         except Exception:
