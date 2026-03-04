@@ -461,28 +461,14 @@ class ScenarioDeployer:
         configured = []
         errors = []
 
-        # 1. Enable wired streams (disable/re-enable cycle ensures logs.otel is wired)
+        # 1. Enable wired streams (always disable/re-enable to ensure clean state)
         try:
-            # Check current status first
-            status_resp = client.get(
-                f"{self.kibana_url}/api/streams/_status",
+            # Always cycle — ensures logs.otel is wired and UI reflects enabled state
+            client.post(
+                f"{self.kibana_url}/api/streams/_disable",
                 headers=_kibana_headers(self.api_key),
+                json={},
             )
-            needs_cycle = True
-            if status_resp.status_code < 300:
-                status = status_resp.json()
-                # If logs.otel is already wired, no cycle needed
-                if status.get("logs.otel") is True:
-                    needs_cycle = False
-
-            if needs_cycle:
-                # Disable first to clear stale state
-                client.post(
-                    f"{self.kibana_url}/api/streams/_disable",
-                    headers=_kibana_headers(self.api_key),
-                    json={},
-                )
-
             resp = client.post(
                 f"{self.kibana_url}/api/streams/_enable",
                 headers=_kibana_headers(self.api_key),
