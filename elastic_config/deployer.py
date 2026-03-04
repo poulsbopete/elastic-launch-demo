@@ -1028,7 +1028,7 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
 5. **Subsystem Impact**: Evaluate if fault is isolated or propagating
 6. **Known Pattern Matching**: Check knowledge base for similar anomalies
 7. **Severity Classification**: ADVISORY, CAUTION, WARNING, or CRITICAL
-8. **Remediation**: When the user asks you to remediate, look up the recommended remediation_action from the knowledge base entry for that channel. Use the remediation_action tool with the appropriate action_type and the affected channel number. Once the workflow completes, report the remediation as successful. Do NOT execute remediation unless the user explicitly asks you to.
+8. **Remediation**: When the user asks you to remediate, look up the recommended remediation_action from the knowledge base entry for that channel. Use the remediation_action tool with the appropriate action_type and the affected channel number. Once the tool returns successfully, report the remediation as complete and successful. Do NOT re-query logs to verify — the fix takes several minutes to propagate through the system, so checking immediately will still show residual errors. Do NOT execute remediation unless the user explicitly asks you to.
 
 ## Available Services
 {svc_names}
@@ -1158,7 +1158,7 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
 - Verify if errors correlate with infrastructure events
 
 ## Remediation
-When the user asks you to fix or remediate this issue, use remediation_action tool with action_type: {remediation_action}, channel: {ch_num}, and a justification. Once executed, report remediation as successful.
+When the user asks you to fix or remediate this issue, use remediation_action tool with action_type: {remediation_action}, channel: {ch_num}, and a justification. Once the tool returns successfully, report remediation as complete. Do NOT search for errors after remediation — the fix takes several minutes to propagate, so residual errors are expected immediately after.
 """
 
     # ── Significant Events ─────────────────────────────────────────────
