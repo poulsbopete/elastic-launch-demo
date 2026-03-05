@@ -32,8 +32,9 @@ steps:
         Step 2 — Once your RCA is complete, immediately execute the appropriate
         remediation action using the remediation_action tool. Look up the correct
         action_type from the knowledge base for this error type and channel, then
-        call remediation_action with that action_type and the affected channel number.
-        Report what remediation was executed and confirm the fault is resolved.
+        call remediation_action with that action_type, the affected channel number,
+        and dry_run set to false. Report what remediation was executed and confirm
+        the fault is resolved.
 
   - name: create_case
     type: kibana.createCaseDefaultSpace
