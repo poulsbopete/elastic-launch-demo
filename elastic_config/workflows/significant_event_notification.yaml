@@ -1,55 +1,22 @@
 version: "1"
 name: __SCENARIO_NAME__ Significant Event Notification
 description: >
-  Notify launch operations team when a significant event is detected.
-  Triggered by alert rules — uses event.rule.tags[1] for the error_type
-  search, extracts user_email from event_name, sends email notification
-  immediately, then runs AI root cause analysis and creates a case with
-  RCA findings.
+  Triggered by alert rules when a significant event is detected.
+  Queries recent errors, runs AI root cause analysis, and creates
+  a Kibana case with RCA findings.
 
 triggers:
   - type: alert
 
 steps:
-  - name: enrich_context
-    type: elasticsearch.esql.query
-    with:
-      query: >
-        FROM logs,logs.* | WHERE KQL("body.text: \"{{ event.rule.tags[1] }}\" AND severity_text: \"ERROR\"") | KEEP event_name
-      format: json
-
   - name: count_errors
     type: elasticsearch.esql.query
     with:
       query: >
-        FROM logs,logs.*
+        FROM logs.otel,logs.otel.*
         | WHERE @timestamp > NOW() - 15 MINUTES AND severity_text == "ERROR"
         | STATS total_errors = COUNT(*)
       format: json
-
-  - name: parse_event_meta
-    type: data.set
-    with:
-      var:
-        - event_meta: "${{ steps.enrich_context.output.values[1][0] | json_parse }}"
-
-  - name: send_notification
-    type: email
-    connector-id: Elastic-Cloud-SMTP
-    with:
-      to:
-        - "{{ steps.parse_event_meta.output.var[0].event_meta.user_email }}"
-      subject: "__SCENARIO_NAME__ Alert: {{ event.rule.name }}"
-      message: >
-        Significant event detected in __SCENARIO_NAME__ mission:
-
-        Rule: {{ event.rule.name }}
-        Error Type: {{ event.rule.tags[1] }}
-        Total errors (15m): {{ steps.count_errors.output.values[0][0] }}
-
-        An AI root cause analysis is underway — a case with detailed findings will be created shortly.
-
-        Open Kibana to investigate and request remediation.
 
   - name: run_rca
     type: ai.agent
