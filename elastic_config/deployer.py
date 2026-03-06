@@ -615,7 +615,7 @@ steps:
     type: elasticsearch.esql.query
     with:
       query: >
-        FROM logs,logs.*
+        FROM logs.otel,logs.otel.*
         | WHERE @timestamp > NOW() - 15 MINUTES AND severity_text == "ERROR"
         | STATS total_errors = COUNT(*)
       format: json
@@ -988,7 +988,7 @@ steps:
 - Log message field is `body.text` — NEVER use `body` alone (causes "Unknown column [body]")
 - NEVER use `message` — this field DOES NOT EXIST. The correct field is `body.text`
 - Service name field is `service.name`
-- Always query FROM logs,logs.* (includes sub-streams)
+- Always query FROM logs.otel,logs.otel.* (includes sub-streams)
 - Use LIKE or KQL() for text matching — NEVER use MATCH()
 
 ## Tool Selection Guide
