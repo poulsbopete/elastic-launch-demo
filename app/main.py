@@ -513,7 +513,8 @@ async def remediate_channel(channel: int, deployment_id: Optional[str] = None):
 
 @app.get("/api/user/info")
 async def user_info(request: Request):
-    email = request.headers.get("X-Forwarded-User", "")
+    import os
+    email = request.headers.get("X-Forwarded-User", "") or os.environ.get("OPERATOR_EMAIL", "")
     return {"email": email}
 
 
