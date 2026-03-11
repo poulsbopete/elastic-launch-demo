@@ -2,8 +2,8 @@ version: "1"
 name: __SCENARIO_NAME__ Significant Event Notification
 description: >
   Triggered by alert rules when a significant event is detected.
-  Queries recent errors, runs AI root cause analysis, and creates
-  a Kibana case with RCA findings.
+  Queries recent errors, runs AI root cause analysis with auto-remediation,
+  and creates a Kibana case with RCA + remediation findings.
 
 triggers:
   - type: alert
