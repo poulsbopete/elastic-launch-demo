@@ -1163,7 +1163,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
         for ch_num, ch_data in sorted(registry.items()):
             num_str = f"{int(ch_num):02d}"
             error_type = ch_data["error_type"]
-            esql_query = f'FROM logs.otel | WHERE body.text LIKE "*{error_type}*" AND severity_text == "ERROR"'
+            esql_query = f'FROM logs.otel,logs.otel.* METADATA _id, _source | WHERE body.text LIKE "*{error_type}*" AND severity_text == "ERROR"'
             operations.append({
                 "index": {
                     "id": f"{self.ns}-se-ch{num_str}",
