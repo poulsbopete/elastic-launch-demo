@@ -1168,6 +1168,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
                 "index": {
                     "id": f"{self.ns}-se-ch{num_str}",
                     "title": f"Channel {num_str}: {ch_data['name']}",
+                    "description": "",
                     "esql": {"query": esql_query},
                 }
             })
