@@ -186,13 +186,22 @@ class ChaosStore:
                         triggered_at, resolved_at, callback_url, user_email)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        deployment_id, channel, state, mode, se_name,
-                        session_id, triggered_at, resolved_at,
-                        callback_url, user_email,
+                        deployment_id,
+                        channel,
+                        state,
+                        mode,
+                        se_name,
+                        session_id,
+                        triggered_at,
+                        resolved_at,
+                        callback_url,
+                        user_email,
                     ),
                 )
 
-    def resolve_channel(self, deployment_id: str, channel: int, resolved_at: float) -> None:
+    def resolve_channel(
+        self, deployment_id: str, channel: int, resolved_at: float
+    ) -> None:
         """Mark a channel as STANDBY."""
         with self._lock:
             with self._connect() as conn:
@@ -240,7 +249,7 @@ class ChaosStore:
                 expired = [r["channel"] for r in rows]
                 if expired:
                     conn.execute(
-                        f"""UPDATE chaos_channels
+                        """UPDATE chaos_channels
                             SET state = 'STANDBY', mode = NULL, session_id = NULL,
                                 resolved_at = ?, callback_url = '', user_email = ''
                             WHERE deployment_id = ? AND state = 'ACTIVE'

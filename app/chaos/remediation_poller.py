@@ -22,9 +22,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("nova7.remediation_poller")
 
-POLL_ACTIVE = 15   # seconds between polls when faults are active
-POLL_IDLE = 30     # seconds between polls when no faults
-CLEANUP_AGE = 3600 # delete processed docs older than 1 hour
+POLL_ACTIVE = 15  # seconds between polls when faults are active
+POLL_IDLE = 30  # seconds between polls when no faults
+CLEANUP_AGE = 3600  # delete processed docs older than 1 hour
 
 
 class RemediationPoller:
@@ -156,7 +156,9 @@ class RemediationPoller:
         try:
             channel = int(channel_raw)
         except (TypeError, ValueError):
-            logger.warning("Invalid channel value in remediation doc %s: %r", doc_id, channel_raw)
+            logger.warning(
+                "Invalid channel value in remediation doc %s: %r", doc_id, channel_raw
+            )
             self._mark_processed(client, doc_id, error="invalid channel")
             return
 
@@ -165,7 +167,10 @@ class RemediationPoller:
             dry_run = dry_run.lower() not in ("false", "0", "no")
 
         if dry_run:
-            logger.info("Remediation doc %s is dry_run — marking processed without resolving", doc_id)
+            logger.info(
+                "Remediation doc %s is dry_run — marking processed without resolving",
+                doc_id,
+            )
             self._mark_processed(client, doc_id, dry_run=True)
             return
 
@@ -174,7 +179,8 @@ class RemediationPoller:
         if not self._chaos.is_active(channel):
             logger.info(
                 "Remediation doc %s targets channel %d which is not active — marking stale",
-                doc_id, channel,
+                doc_id,
+                channel,
             )
             self._mark_processed(client, doc_id, error="channel not active")
             return
@@ -182,7 +188,8 @@ class RemediationPoller:
         if channel in resolved_channels:
             logger.info(
                 "Remediation doc %s is duplicate for channel %d — already resolved this cycle",
-                doc_id, channel,
+                doc_id,
+                channel,
             )
             self._mark_processed(client, doc_id, error="duplicate")
             return
@@ -192,7 +199,9 @@ class RemediationPoller:
         resolved_channels.add(channel)
         logger.info(
             "Remediation poller resolved channel %d: %s (doc=%s)",
-            channel, status, doc_id,
+            channel,
+            status,
+            doc_id,
         )
 
         # Broadcast via WebSocket so dashboard updates immediately

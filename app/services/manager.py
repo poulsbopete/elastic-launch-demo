@@ -7,7 +7,13 @@ import threading
 import time
 from typing import Any, Optional
 
-from app.config import COUNTDOWN_ENABLED, COUNTDOWN_SPEED, COUNTDOWN_START_SECONDS, SERVICES, ACTIVE_SCENARIO
+from app.config import (
+    COUNTDOWN_ENABLED,
+    COUNTDOWN_SPEED,
+    COUNTDOWN_START_SECONDS,
+    SERVICES,
+    ACTIVE_SCENARIO,
+)
 from app.telemetry import OTLPClient
 
 logger = logging.getLogger("nova7.manager")
@@ -16,7 +22,13 @@ logger = logging.getLogger("nova7.manager")
 class ServiceManager:
     """Manages all service instances, log generators, and the mission countdown clock."""
 
-    def __init__(self, chaos_controller, dashboard_ws=None, ctx=None, otlp_client: OTLPClient | None = None):
+    def __init__(
+        self,
+        chaos_controller,
+        dashboard_ws=None,
+        ctx=None,
+        otlp_client: OTLPClient | None = None,
+    ):
         self.chaos_controller = chaos_controller
         self.dashboard_ws = dashboard_ws
         self._ctx = ctx  # ScenarioContext or None
@@ -26,7 +38,9 @@ class ServiceManager:
         # Countdown state — from context or module-level defaults
         if ctx:
             _countdown = ctx.scenario.countdown_config
-            self._countdown_total = _countdown.start_seconds if _countdown.enabled else 600
+            self._countdown_total = (
+                _countdown.start_seconds if _countdown.enabled else 600
+            )
             self._countdown_speed = _countdown.speed if _countdown.enabled else 1.0
             self._countdown_enabled = _countdown.enabled
             self._countdown_phases = _countdown.phases
@@ -61,6 +75,7 @@ class ServiceManager:
         else:
             import os
             from scenarios import get_scenario
+
             active = os.environ.get("ACTIVE_SCENARIO", ACTIVE_SCENARIO)
             scenario = get_scenario(active)
 
@@ -153,8 +168,11 @@ class ServiceManager:
         ]
         for name, fn, args, kwargs in generators:
             t = threading.Thread(
-                target=fn, args=args, kwargs=kwargs,
-                name=name, daemon=True,
+                target=fn,
+                args=args,
+                kwargs=kwargs,
+                name=name,
+                daemon=True,
             )
             t.start()
             self._generator_threads.append(t)

@@ -92,7 +92,9 @@ class OTLPClient:
 
     # ── Resource helpers ───────────────────────────────────────────────
     @staticmethod
-    def build_resource(service_name: str, service_cfg: dict[str, Any], namespace: str = "demo") -> dict[str, Any]:
+    def build_resource(
+        service_name: str, service_cfg: dict[str, Any], namespace: str = "demo"
+    ) -> dict[str, Any]:
         """Build an OTLP resource object for a service."""
         language = service_cfg.get("language", "python")
         attrs = {
@@ -316,7 +318,8 @@ class OTLPClient:
         res = copy.deepcopy(resource)
         # Remove elasticsearch.index so metrics/traces use default data_stream routing
         res["attributes"] = [
-            attr for attr in res.get("attributes", [])
+            attr
+            for attr in res.get("attributes", [])
             if attr["key"] != "elasticsearch.index"
         ]
         for attr in res["attributes"]:
@@ -328,7 +331,9 @@ class OTLPClient:
     def _send(self, url: str, payload: dict, signal_name: str) -> None:
         if self.consecutive_failures >= self.max_failures_before_backoff:
             # Exponential backoff — skip sending
-            backoff = min(2 ** (self.consecutive_failures - self.max_failures_before_backoff), 30)
+            backoff = min(
+                2 ** (self.consecutive_failures - self.max_failures_before_backoff), 30
+            )
             if time.time() % backoff > 1:
                 return
 

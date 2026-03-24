@@ -26,7 +26,9 @@ class DashboardWebSocket:
     def disconnect(self, websocket: WebSocket) -> None:
         if websocket in self._connections:
             self._connections.remove(websocket)
-        logger.info("Dashboard client disconnected (%d remaining)", len(self._connections))
+        logger.info(
+            "Dashboard client disconnected (%d remaining)", len(self._connections)
+        )
 
     async def broadcast(self, message: dict[str, Any]) -> None:
         dead = []

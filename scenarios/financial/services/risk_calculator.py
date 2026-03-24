@@ -44,7 +44,9 @@ class RiskCalculatorService(BaseService):
 
         # Metrics
         self._risk_checks += 1
-        self.emit_metric("risk_calculator.risk_checks", float(self._risk_checks), "checks")
+        self.emit_metric(
+            "risk_calculator.risk_checks", float(self._risk_checks), "checks"
+        )
         self.emit_metric(
             "risk_calculator.var_95",
             round(random.uniform(5.0, 25.0), 2),

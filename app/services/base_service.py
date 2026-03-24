@@ -16,8 +16,10 @@ from app.trace_context import _trace_context_store
 
 logger = logging.getLogger("nova7.services")
 
+
 def _get_scenario():
     from scenarios import get_scenario
+
     return get_scenario(ACTIVE_SCENARIO)
 
 
@@ -63,7 +65,8 @@ class BaseService(ABC):
             self._namespace = "nova7"
 
         self.resource = OTLPClient.build_resource(
-            self.SERVICE_NAME, self.service_cfg,
+            self.SERVICE_NAME,
+            self.service_cfg,
             namespace=self._namespace,
         )
 
@@ -187,8 +190,12 @@ class BaseService(ABC):
             attrs.update(extra_attrs)
         trace_id, span_id = _trace_context_store.get(self.SERVICE_NAME)
         record = self.otlp.build_log_record(
-            severity=level, body=message, attributes=attrs, event_name=event_name,
-            trace_id=trace_id, span_id=span_id,
+            severity=level,
+            body=message,
+            attributes=attrs,
+            event_name=event_name,
+            trace_id=trace_id,
+            span_id=span_id,
         )
         self.otlp.send_logs(self.resource, [record])
 
@@ -229,9 +236,11 @@ class BaseService(ABC):
     def _safe_format(template: str, params: dict) -> str:
         """Format a template string, ignoring missing keys."""
         import string
+
         class SafeDict(dict):
             def __missing__(self, key):
                 return f"{{{key}}}"
+
         return string.Formatter().vformat(template, (), SafeDict(params))
 
     def emit_fault_logs(self, channel: int) -> None:
@@ -271,11 +280,14 @@ class BaseService(ABC):
             ev_name = None
             if meta.get("callback_url") or meta.get("user_email"):
                 import json as _json
-                ev_name = _json.dumps({
-                    "callback_url": meta.get("callback_url", ""),
-                    "user_email": meta.get("user_email", ""),
-                    "deployment_id": self._ctx.scenario_id if self._ctx else "",
-                })
+
+                ev_name = _json.dumps(
+                    {
+                        "callback_url": meta.get("callback_url", ""),
+                        "user_email": meta.get("user_email", ""),
+                        "deployment_id": self._ctx.scenario_id if self._ctx else "",
+                    }
+                )
             self.emit_log("ERROR", msg, attrs, event_name=ev_name)
 
     def emit_cascade_logs(self, channel: int) -> None:

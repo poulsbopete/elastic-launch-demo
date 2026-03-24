@@ -50,9 +50,7 @@ def get_scenario(scenario_id: str) -> BaseScenario:
     _discover()
     if scenario_id not in _registry:
         available = ", ".join(_registry.keys()) or "(none)"
-        raise KeyError(
-            f"Unknown scenario '{scenario_id}'. Available: {available}"
-        )
+        raise KeyError(f"Unknown scenario '{scenario_id}'. Available: {available}")
     return _registry[scenario_id]
 
 

@@ -35,9 +35,7 @@ class TelemetryRelayService(BaseService):
             packets = random.randint(100, 500)
             dropped = random.randint(0, 2)
 
-            self.emit_metric(
-                f"relay.latency_{source}_{dest}", latency, "ms"
-            )
+            self.emit_metric(f"relay.latency_{source}_{dest}", latency, "ms")
             self.emit_log(
                 "INFO",
                 f"[RLY] route={source}->{dest} packets={packets} latency={latency}ms dropped={dropped} status=NOMINAL",

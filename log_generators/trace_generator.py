@@ -41,6 +41,7 @@ STATUS_ERROR = 2
 def _load_topology():
     """Load topology data from the active scenario."""
     from scenarios import get_scenario
+
     scenario = get_scenario(ACTIVE_SCENARIO)
     return scenario.service_topology, scenario.entry_endpoints, scenario.db_operations
 
@@ -58,7 +59,9 @@ def _gen_span_id() -> str:
     return secrets.token_hex(8)
 
 
-def _build_resource(service_name: str, services: dict | None = None, namespace: str | None = None) -> dict:
+def _build_resource(
+    service_name: str, services: dict | None = None, namespace: str | None = None
+) -> dict:
     _services = services or SERVICES
     _namespace = namespace or NAMESPACE
     cfg = _services[service_name]
@@ -124,16 +127,22 @@ def _build_resource(service_name: str, services: dict | None = None, namespace: 
     }
 
 
-def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
-                    chaos_affected: set[str] | None = None,
-                    *, services: dict | None = None, namespace: str | None = None,
-                    service_topology: dict | None = None,
-                    entry_endpoints: dict | None = None,
-                    db_operations: dict | None = None,
-                    latency_multiplier: float = 1.0,
-                    scenario=None,
-                    active_channels: list[int] | None = None,
-                    channel_registry: dict | None = None) -> dict[str, list]:
+def _generate_trace(
+    client: OTLPClient,
+    resources: dict,
+    rng: random.Random,
+    chaos_affected: set[str] | None = None,
+    *,
+    services: dict | None = None,
+    namespace: str | None = None,
+    service_topology: dict | None = None,
+    entry_endpoints: dict | None = None,
+    db_operations: dict | None = None,
+    latency_multiplier: float = 1.0,
+    scenario=None,
+    active_channels: list[int] | None = None,
+    channel_registry: dict | None = None,
+) -> dict[str, list]:
     """Generate a single distributed trace across multiple services.
 
     Returns a dict mapping service_name -> list of spans for that service.
@@ -192,8 +201,14 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
 
     # Root SERVER span for the entry-point service
     root_span_id = _gen_span_id()
-    root_status = STATUS_ERROR if (is_error_trace and error_service == entry_service) else STATUS_OK
-    root_http_status = rng.choice([500, 502, 503]) if root_status == STATUS_ERROR else 200
+    root_status = (
+        STATUS_ERROR
+        if (is_error_trace and error_service == entry_service)
+        else STATUS_OK
+    )
+    root_http_status = (
+        rng.choice([500, 502, 503]) if root_status == STATUS_ERROR else 200
+    )
 
     # Helper: build extra scenario attrs for a span
     def _extra_attrs(svc: str, is_err: bool) -> dict:
@@ -209,7 +224,11 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
                 # correlate with slow traces too, not just failed ones)
                 is_affected = bool(_svc_channels.get(svc))
                 for ch in active_channels:
-                    extra.update(scenario.get_correlation_attribute(ch, is_err or is_affected, rng))
+                    extra.update(
+                        scenario.get_correlation_attribute(
+                            ch, is_err or is_affected, rng
+                        )
+                    )
         return extra
 
     root_attrs = {
@@ -274,9 +293,13 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
                 call_duration = rng.randint(10, max(20, total_duration // 2))
                 callee_error = False
 
-            is_this_error = (is_error_trace and callee_service == error_service) or callee_error
+            is_this_error = (
+                is_error_trace and callee_service == error_service
+            ) or callee_error
             call_status = STATUS_ERROR if is_this_error else STATUS_OK
-            call_http_status = rng.choice([500, 502, 503, 504]) if is_this_error else 200
+            call_http_status = (
+                rng.choice([500, 502, 503, 504]) if is_this_error else 200
+            )
 
             # CLIENT span on the caller side
             client_span_id = _gen_span_id()
@@ -351,7 +374,9 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
             # Second-level downstream calls (e.g., navigation -> sensor-validator)
             second_downstream = _topology.get(callee_service, [])
             if second_downstream and rng.random() < 0.4:
-                second_callee, second_endpoint, second_method = rng.choice(second_downstream)
+                second_callee, second_endpoint, second_method = rng.choice(
+                    second_downstream
+                )
                 second_duration = rng.randint(5, max(5, server_duration // 2))
                 second_status = STATUS_OK
 
@@ -375,7 +400,9 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
                         "net.peer.port": 8080,
                     },
                 )
-                spans_by_service.setdefault(callee_service, []).append(second_client_span)
+                spans_by_service.setdefault(callee_service, []).append(
+                    second_client_span
+                )
 
                 # SERVER span
                 second_server_id = _gen_span_id()
@@ -395,43 +422,77 @@ def _generate_trace(client: OTLPClient, resources: dict, rng: random.Random,
                         "server.port": 8080,
                     },
                 )
-                spans_by_service.setdefault(second_callee, []).append(second_server_span)
+                spans_by_service.setdefault(second_callee, []).append(
+                    second_server_span
+                )
 
     return spans_by_service
 
 
 # ── Run loop (used by ServiceManager and standalone) ──────────────────────────
-def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
-        scenario_data: dict | None = None) -> None:
+def run(
+    client: OTLPClient,
+    stop_event: threading.Event,
+    chaos_controller=None,
+    scenario_data: dict | None = None,
+) -> None:
     """Run trace generator loop until stop_event is set."""
     rng = random.Random()
 
     # Use scenario_data overrides or fall back to module-level globals
     _all_services = scenario_data["services"] if scenario_data else SERVICES
     _namespace = scenario_data["namespace"] if scenario_data else NAMESPACE
-    _channel_registry = scenario_data["channel_registry"] if scenario_data else CHANNEL_REGISTRY
-    _all_topology = scenario_data["service_topology"] if scenario_data else SERVICE_TOPOLOGY
-    _all_endpoints = scenario_data["entry_endpoints"] if scenario_data else ENTRY_ENDPOINTS
+    _channel_registry = (
+        scenario_data["channel_registry"] if scenario_data else CHANNEL_REGISTRY
+    )
+    _all_topology = (
+        scenario_data["service_topology"] if scenario_data else SERVICE_TOPOLOGY
+    )
+    _all_endpoints = (
+        scenario_data["entry_endpoints"] if scenario_data else ENTRY_ENDPOINTS
+    )
     _db_ops = scenario_data["db_operations"] if scenario_data else DB_OPERATIONS
     _scenario = scenario_data.get("scenario") if scenario_data else None
 
     # Filter out services that don't generate traces (e.g. infrastructure/network devices)
-    excluded = {name for name, cfg in _all_services.items() if cfg.get("generates_traces") is False}
-    _services = {name: cfg for name, cfg in _all_services.items() if name not in excluded}
-    _topology = {
-        caller: [(callee, ep, method) for callee, ep, method in calls if callee not in excluded]
-        for caller, calls in _all_topology.items() if caller not in excluded
+    excluded = {
+        name
+        for name, cfg in _all_services.items()
+        if cfg.get("generates_traces") is False
     }
-    _endpoints = {name: eps for name, eps in _all_endpoints.items() if name not in excluded}
+    _services = {
+        name: cfg for name, cfg in _all_services.items() if name not in excluded
+    }
+    _topology = {
+        caller: [
+            (callee, ep, method)
+            for callee, ep, method in calls
+            if callee not in excluded
+        ]
+        for caller, calls in _all_topology.items()
+        if caller not in excluded
+    }
+    _endpoints = {
+        name: eps for name, eps in _all_endpoints.items() if name not in excluded
+    }
 
     if excluded:
-        logger.info("Excluding %d infra services from traces: %s", len(excluded), ", ".join(sorted(excluded)))
+        logger.info(
+            "Excluding %d infra services from traces: %s",
+            len(excluded),
+            ", ".join(sorted(excluded)),
+        )
 
-    resources = {svc: _build_resource(svc, services=_services, namespace=_namespace) for svc in _services}
+    resources = {
+        svc: _build_resource(svc, services=_services, namespace=_namespace)
+        for svc in _services
+    }
     total_traces = 0
     total_spans = 0
 
-    logger.info("Trace generator started (chaos_aware=%s)", chaos_controller is not None)
+    logger.info(
+        "Trace generator started (chaos_aware=%s)", chaos_controller is not None
+    )
 
     while not stop_event.is_set():
         # Build set of services affected by active chaos channels
@@ -455,9 +516,14 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
         batch_by_service: dict[str, list] = {}
         for _ in range(num_traces):
             trace_spans = _generate_trace(
-                client, resources, rng, chaos_affected or None,
-                services=_services, namespace=_namespace,
-                service_topology=_topology, entry_endpoints=_endpoints,
+                client,
+                resources,
+                rng,
+                chaos_affected or None,
+                services=_services,
+                namespace=_namespace,
+                service_topology=_topology,
+                entry_endpoints=_endpoints,
                 db_operations=_db_ops,
                 latency_multiplier=_latency_mult,
                 scenario=_scenario,
@@ -468,7 +534,9 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
                 batch_by_service.setdefault(svc, []).extend(spans)
                 # Publish latest trace context for log-trace correlation
                 if spans:
-                    _trace_context_store.set(svc, spans[0]["traceId"], spans[0]["spanId"])
+                    _trace_context_store.set(
+                        svc, spans[0]["traceId"], spans[0]["spanId"]
+                    )
 
         batch_span_count = 0
         for svc, spans in batch_by_service.items():
@@ -480,18 +548,25 @@ def run(client: OTLPClient, stop_event: threading.Event, chaos_controller=None,
         total_spans += batch_span_count
         logger.info(
             "Sent %d traces (%d spans) — total: %d traces, %d spans",
-            num_traces, batch_span_count, total_traces, total_spans,
+            num_traces,
+            batch_span_count,
+            total_traces,
+            total_spans,
         )
 
         sleep_time = rng.uniform(BATCH_INTERVAL_MIN, BATCH_INTERVAL_MAX)
         stop_event.wait(sleep_time)
 
-    logger.info("Trace generator stopped. Total: %d traces, %d spans", total_traces, total_spans)
+    logger.info(
+        "Trace generator stopped. Total: %d traces, %d spans", total_traces, total_spans
+    )
 
 
 # ── Standalone entry point ────────────────────────────────────────────────────
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
 
     client = OTLPClient()
     stop_event = threading.Event()

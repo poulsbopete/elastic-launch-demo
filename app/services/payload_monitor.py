@@ -61,7 +61,9 @@ class PayloadMonitorService(BaseService):
         # ── Payload sensor readings ────────────────────────────
         all_nominal = True
         for sensor_name, sensor in self.PAYLOAD_SENSORS.items():
-            value = round(random.uniform(sensor["nominal_min"], sensor["nominal_max"]), 2)
+            value = round(
+                random.uniform(sensor["nominal_min"], sensor["nominal_max"]), 2
+            )
             status = "NOMINAL"
 
             self.emit_metric(f"payload.{sensor_name}", value, sensor["unit"])

@@ -83,7 +83,9 @@ class NavigationService(BaseService):
         st_conf = round(random.uniform(*st["confidence_range"]), 4)
         stars = random.randint(*st["catalog_stars_range"])
 
-        self.emit_metric("navigation.star_tracker.alignment_arcsec", alignment, "arcsec")
+        self.emit_metric(
+            "navigation.star_tracker.alignment_arcsec", alignment, "arcsec"
+        )
         self.emit_metric("navigation.star_tracker.confidence", st_conf, "ratio")
         self.emit_log(
             "INFO",

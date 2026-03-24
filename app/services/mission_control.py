@@ -16,8 +16,14 @@ class MissionControlService(BaseService):
         self._last_health_summary = time.time()
         self._subsystem_poll_idx = 0
         self._subsystems = [
-            "propulsion", "guidance", "communications",
-            "payload", "relay", "ground", "validation", "safety",
+            "propulsion",
+            "guidance",
+            "communications",
+            "payload",
+            "relay",
+            "ground",
+            "validation",
+            "safety",
         ]
 
     def generate_telemetry(self) -> None:

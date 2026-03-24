@@ -83,8 +83,11 @@ class ScenarioInstance:
         if self.remediation_poller:
             self.remediation_poller.start()
         self._running = True
-        logger.info("Instance %s started (%d services)", self.scenario_id,
-                     len(self.service_manager.services))
+        logger.info(
+            "Instance %s started (%d services)",
+            self.scenario_id,
+            len(self.service_manager.services),
+        )
 
     def stop(self) -> None:
         """Stop all services and generators."""

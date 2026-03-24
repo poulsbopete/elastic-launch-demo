@@ -16,7 +16,10 @@ class RangeSafetyService(BaseService):
         {"name": "telemetry_link", "description": "Telemetry data link integrity"},
         {"name": "destruct_package", "description": "Destruct system status"},
         {"name": "boundary_corridor", "description": "Flight corridor boundaries"},
-        {"name": "populated_area_clearance", "description": "Populated area safety margin"},
+        {
+            "name": "populated_area_clearance",
+            "description": "Populated area safety margin",
+        },
         {"name": "debris_footprint", "description": "Predicted debris footprint"},
     ]
 
@@ -47,9 +50,7 @@ class RangeSafetyService(BaseService):
                     "operation": "safety_check",
                 },
             )
-            self.emit_metric(
-                f"range_safety.{check['name']}_margin", margin, "%"
-            )
+            self.emit_metric(f"range_safety.{check['name']}_margin", margin, "%")
 
         # ── Tracking status ────────────────────────────────────
         track_quality = round(random.uniform(0.92, 1.0), 4)

@@ -602,8 +602,8 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
                 pod_res = _build_pod_resource(svc, pod_data, cluster)
                 metrics = _generate_pod_metrics(svc, state, rng)
 
+                intensity_ratio = oom_intensity / 100.0
                 if is_spiked:
-                    intensity_ratio = oom_intensity / 100.0
                     # Override memory metrics for spiked pods
                     for m in metrics:
                         if m["name"] == "k8s.pod.memory_limit_utilization":

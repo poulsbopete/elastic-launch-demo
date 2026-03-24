@@ -37,30 +37,61 @@ SCOPE_VERSION = "1.0.0"
 # ── Realistic IP pools ──────────────────────────────────────────────────────
 
 AWS_INTERNAL_IPS = [
-    "10.0.1.42", "10.0.1.100", "10.0.2.15", "10.0.2.88", "10.0.3.22",
-    "10.0.3.55", "10.0.4.10", "10.0.4.77", "10.0.5.33", "10.0.5.99",
+    "10.0.1.42",
+    "10.0.1.100",
+    "10.0.2.15",
+    "10.0.2.88",
+    "10.0.3.22",
+    "10.0.3.55",
+    "10.0.4.10",
+    "10.0.4.77",
+    "10.0.5.33",
+    "10.0.5.99",
 ]
 AWS_EXTERNAL_IPS = [
-    "203.0.113.10", "203.0.113.25", "198.51.100.44", "198.51.100.77",
-    "192.0.2.100", "192.0.2.200", "54.239.28.85", "52.94.76.10",
+    "203.0.113.10",
+    "203.0.113.25",
+    "198.51.100.44",
+    "198.51.100.77",
+    "192.0.2.100",
+    "192.0.2.200",
+    "54.239.28.85",
+    "52.94.76.10",
 ]
 
 GCP_INTERNAL_IPS = [
-    "10.128.0.15", "10.128.0.20", "10.128.1.5", "10.128.1.30",
-    "10.128.2.10", "10.128.2.50", "10.128.3.8", "10.128.3.42",
+    "10.128.0.15",
+    "10.128.0.20",
+    "10.128.1.5",
+    "10.128.1.30",
+    "10.128.2.10",
+    "10.128.2.50",
+    "10.128.3.8",
+    "10.128.3.42",
 ]
 GCP_EXTERNAL_IPS = [
-    "35.201.97.10", "35.201.97.55", "34.120.50.22", "34.120.50.88",
-    "104.199.30.5", "104.199.30.77", "142.250.80.10", "142.250.80.25",
+    "35.201.97.10",
+    "35.201.97.55",
+    "34.120.50.22",
+    "34.120.50.88",
+    "104.199.30.5",
+    "104.199.30.77",
+    "142.250.80.10",
+    "142.250.80.25",
 ]
 
-GCP_VPC_NAMES = [f"{NAMESPACE}-vpc-prod", f"{NAMESPACE}-vpc-staging", f"{NAMESPACE}-vpc-data"]
+GCP_VPC_NAMES = [
+    f"{NAMESPACE}-vpc-prod",
+    f"{NAMESPACE}-vpc-staging",
+    f"{NAMESPACE}-vpc-data",
+]
 COUNTRY_CODES = ["USA", "DEU", "GBR", "JPN", "AUS", "CAN", "FRA", "BRA", "IND", "SGP"]
 TRANSPORTS = ["tcp", "udp", "icmp"]
 COMMON_PORTS = [22, 53, 80, 443, 3306, 5432, 6379, 8080, 8443, 9200, 9300]
 
 
 # ── AWS VPC flow log generation ─────────────────────────────────────────────
+
 
 def _build_aws_resource() -> dict:
     attrs = {
@@ -84,8 +115,12 @@ def _generate_aws_flow_record(rng: random.Random) -> dict:
     action = rng.choice(["ACCEPT"] * 8 + ["REJECT"] * 2)  # 80% accept
     src_ip = rng.choice(AWS_INTERNAL_IPS + AWS_EXTERNAL_IPS)
     dst_ip = rng.choice(AWS_INTERNAL_IPS + AWS_EXTERNAL_IPS)
-    src_port = rng.choice(COMMON_PORTS) if rng.random() < 0.6 else rng.randint(1024, 65535)
-    dst_port = rng.choice(COMMON_PORTS) if rng.random() < 0.7 else rng.randint(1024, 65535)
+    src_port = (
+        rng.choice(COMMON_PORTS) if rng.random() < 0.6 else rng.randint(1024, 65535)
+    )
+    dst_port = (
+        rng.choice(COMMON_PORTS) if rng.random() < 0.7 else rng.randint(1024, 65535)
+    )
     bytes_transferred = rng.randint(64, 1_500_000)
 
     attrs = {
@@ -114,6 +149,7 @@ def _generate_aws_flow_record(rng: random.Random) -> dict:
 
 # ── GCP VPC flow log generation ─────────────────────────────────────────────
 
+
 def _build_gcp_resource() -> dict:
     attrs = {
         "cloud.provider": "gcp",
@@ -130,7 +166,9 @@ def _build_gcp_resource() -> dict:
     return {"attributes": _format_attributes(attrs), "schemaUrl": SCHEMA_URL}
 
 
-def _generate_gcp_flow_record(rng: random.Random, gcp_vpc_names: list | None = None) -> dict:
+def _generate_gcp_flow_record(
+    rng: random.Random, gcp_vpc_names: list | None = None
+) -> dict:
     """Generate a single GCP VPC flow log record."""
     _vpc_names = gcp_vpc_names or GCP_VPC_NAMES
 
@@ -172,7 +210,10 @@ def _generate_gcp_flow_record(rng: random.Random, gcp_vpc_names: list | None = N
 
 # ── Run loop ─────────────────────────────────────────────────────────────────
 
-def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None) -> None:
+
+def run(
+    client: OTLPClient, stop_event: threading.Event, scenario_data: dict | None = None
+) -> None:
     """Run VPC flow log generator loop until stop_event is set."""
     rng = random.Random()
 
@@ -194,7 +235,10 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
             "telemetry.sdk.name": "opentelemetry",
             "telemetry.sdk.version": "1.24.0",
         }
-        gcp_resource = {"attributes": _format_attributes(gcp_attrs), "schemaUrl": SCHEMA_URL}
+        gcp_resource = {
+            "attributes": _format_attributes(gcp_attrs),
+            "schemaUrl": SCHEMA_URL,
+        }
     else:
         scope_name = SCOPE_NAME
         gcp_vpc_names = GCP_VPC_NAMES
@@ -202,8 +246,13 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
 
     aws_resource = _build_aws_resource()
 
-    logger.info("VPC flow generator started (interval=%ds, batch=%d-%d per provider, scope=%s)",
-                FLOW_INTERVAL, BATCH_SIZE_MIN, BATCH_SIZE_MAX, scope_name)
+    logger.info(
+        "VPC flow generator started (interval=%ds, batch=%d-%d per provider, scope=%s)",
+        FLOW_INTERVAL,
+        BATCH_SIZE_MIN,
+        BATCH_SIZE_MAX,
+        scope_name,
+    )
 
     batch_count = 0
     while not stop_event.is_set():
@@ -211,34 +260,48 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
         aws_batch_size = rng.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
         aws_records = [_generate_aws_flow_record(rng) for _ in range(aws_batch_size)]
         aws_payload = {
-            "resourceLogs": [{
-                "resource": aws_resource,
-                "scopeLogs": [{
-                    "scope": {"name": scope_name, "version": SCOPE_VERSION},
-                    "logRecords": aws_records,
-                }],
-            }]
+            "resourceLogs": [
+                {
+                    "resource": aws_resource,
+                    "scopeLogs": [
+                        {
+                            "scope": {"name": scope_name, "version": SCOPE_VERSION},
+                            "logRecords": aws_records,
+                        }
+                    ],
+                }
+            ]
         }
         client._send(f"{client.endpoint}/v1/logs", aws_payload, "aws-vpc-flow")
 
         # GCP flow logs
         gcp_batch_size = rng.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
-        gcp_records = [_generate_gcp_flow_record(rng, gcp_vpc_names) for _ in range(gcp_batch_size)]
+        gcp_records = [
+            _generate_gcp_flow_record(rng, gcp_vpc_names) for _ in range(gcp_batch_size)
+        ]
         gcp_payload = {
-            "resourceLogs": [{
-                "resource": gcp_resource,
-                "scopeLogs": [{
-                    "scope": {"name": scope_name, "version": SCOPE_VERSION},
-                    "logRecords": gcp_records,
-                }],
-            }]
+            "resourceLogs": [
+                {
+                    "resource": gcp_resource,
+                    "scopeLogs": [
+                        {
+                            "scope": {"name": scope_name, "version": SCOPE_VERSION},
+                            "logRecords": gcp_records,
+                        }
+                    ],
+                }
+            ]
         }
         client._send(f"{client.endpoint}/v1/logs", gcp_payload, "gcp-vpc-flow")
 
         batch_count += 1
         if batch_count % 12 == 0:
-            logger.info("VPC flow batch %d: sent %d AWS + %d GCP records",
-                        batch_count, aws_batch_size, gcp_batch_size)
+            logger.info(
+                "VPC flow batch %d: sent %d AWS + %d GCP records",
+                batch_count,
+                aws_batch_size,
+                gcp_batch_size,
+            )
 
         stop_event.wait(FLOW_INTERVAL)
 
@@ -246,7 +309,9 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     client = OTLPClient()
     stop_event = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop_event.set())

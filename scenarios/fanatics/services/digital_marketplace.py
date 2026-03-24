@@ -27,7 +27,9 @@ class DigitalMarketplaceService(BaseService):
         avg_response_ms = round(random.uniform(35.0, 120.0), 1)
 
         self.emit_metric("marketplace.active_users", float(active_users), "users")
-        self.emit_metric("marketplace.transactions_per_sec", transactions_per_sec, "tps")
+        self.emit_metric(
+            "marketplace.transactions_per_sec", transactions_per_sec, "tps"
+        )
         self.emit_metric("marketplace.cart_conversion_pct", cart_conversion, "%")
         self.emit_metric("marketplace.avg_response_ms", avg_response_ms, "ms")
 

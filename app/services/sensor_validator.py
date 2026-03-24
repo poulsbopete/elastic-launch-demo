@@ -16,10 +16,24 @@ class SensorValidatorService(BaseService):
     SERVICE_NAME = "sensor-validator"
 
     VALIDATION_SENSORS = [
-        "thermal", "pressure", "flow_rate", "gps", "imu", "star_tracker",
-        "rf_signal", "packet_integrity", "antenna_position", "vibration",
-        "electrical", "weather", "hydraulic", "pipeline_health",
-        "calibration", "safety_system", "radar_tracking", "network_latency",
+        "thermal",
+        "pressure",
+        "flow_rate",
+        "gps",
+        "imu",
+        "star_tracker",
+        "rf_signal",
+        "packet_integrity",
+        "antenna_position",
+        "vibration",
+        "electrical",
+        "weather",
+        "hydraulic",
+        "pipeline_health",
+        "calibration",
+        "safety_system",
+        "radar_tracking",
+        "network_latency",
         "data_integrity",
     ]
 
@@ -56,7 +70,9 @@ class SensorValidatorService(BaseService):
         # ── Metrics ────────────────────────────────────────────
         validations_per_sec = round(random.uniform(45.0, 65.0), 1)
         queue_depth = random.randint(0, 20)
-        self.emit_metric("sensor_validator.validations_per_sec", validations_per_sec, "validations/s")
+        self.emit_metric(
+            "sensor_validator.validations_per_sec", validations_per_sec, "validations/s"
+        )
         self.emit_metric("sensor_validator.queue_depth", float(queue_depth), "items")
 
         self.emit_log(
@@ -99,11 +115,14 @@ class SensorValidatorService(BaseService):
         ev_name = None
         if meta.get("callback_url") or meta.get("user_email"):
             import json as _json
-            ev_name = _json.dumps({
-                "callback_url": meta.get("callback_url", ""),
-                "user_email": meta.get("user_email", ""),
-                "deployment_id": self._ctx.scenario_id if self._ctx else "",
-            })
+
+            ev_name = _json.dumps(
+                {
+                    "callback_url": meta.get("callback_url", ""),
+                    "user_email": meta.get("user_email", ""),
+                    "deployment_id": self._ctx.scenario_id if self._ctx else "",
+                }
+            )
         self.emit_log(
             "ERROR",
             f"Validation FAIL: {ch['sensor_type']} sensor calibration out of bounds — {ch['error_type']}",

@@ -110,10 +110,15 @@ class ChaosController:
         # Write-through to SQLite
         if self._store and self._deployment_id:
             self._store.upsert_channel(
-                self._deployment_id, channel,
-                state=ACTIVE, mode=mode, se_name=se_name,
-                session_id=session_id, triggered_at=ch["triggered_at"],
-                callback_url=callback_url, user_email=user_email,
+                self._deployment_id,
+                channel,
+                state=ACTIVE,
+                mode=mode,
+                se_name=se_name,
+                session_id=session_id,
+                triggered_at=ch["triggered_at"],
+                callback_url=callback_url,
+                user_email=user_email,
             )
 
         ch_def = self._channel_registry[channel]
@@ -146,7 +151,12 @@ class ChaosController:
                 return {"status": "already_standby", "channel": channel}
 
             # Session ownership check (skip if force=True or no session tracking)
-            if not force and session_id and ch["session_id"] and ch["session_id"] != session_id:
+            if (
+                not force
+                and session_id
+                and ch["session_id"]
+                and ch["session_id"] != session_id
+            ):
                 return {"error": "session_mismatch", "channel": channel}
 
             ch["state"] = STANDBY
@@ -159,7 +169,10 @@ class ChaosController:
             # Reset infra spikes if no faults remain active
             any_active = any(c["state"] == ACTIVE for c in self._channels.values())
             if not any_active:
-                self._infra_spikes = {k: (1.0 if k == "latency_multiplier" else 0) for k in self._infra_spikes}
+                self._infra_spikes = {
+                    k: (1.0 if k == "latency_multiplier" else 0)
+                    for k in self._infra_spikes
+                }
 
         # Write-through to SQLite
         if self._store and self._deployment_id:
@@ -267,13 +280,16 @@ class ChaosController:
         with self._lock:
             self._expire_stale()
             return [
-                ch_id for ch_id, ch in self._channels.items()
+                ch_id
+                for ch_id, ch in self._channels.items()
                 if ch["state"] == ACTIVE and ch["session_id"] == session_id
             ]
 
     def get_active_channels(self) -> list[int]:
         with self._lock:
-            return [ch_id for ch_id, ch in self._channels.items() if ch["state"] == ACTIVE]
+            return [
+                ch_id for ch_id, ch in self._channels.items() if ch["state"] == ACTIVE
+            ]
 
     def set_infra_spikes(self, spikes: dict[str, float]) -> None:
         with self._lock:

@@ -70,7 +70,9 @@ class FuelSystemService(BaseService):
         for sensor_key, sensor in self.SENSORS.items():
             value = random.uniform(sensor["nominal_min"], sensor["nominal_max"])
             # Add realistic noise
-            noise = random.gauss(0, (sensor["nominal_max"] - sensor["nominal_min"]) * 0.02)
+            noise = random.gauss(
+                0, (sensor["nominal_max"] - sensor["nominal_min"]) * 0.02
+            )
             value = round(value + noise, 2)
             # Clamp to nominal range in normal mode
             if not active_channels:
@@ -83,7 +85,9 @@ class FuelSystemService(BaseService):
                 {
                     "operation": "sensor_reading",
                     "sensor.name": sensor_key,
-                    "sensor.type": sensor_key.split("_")[0] if "_" in sensor_key else sensor_key,
+                    "sensor.type": (
+                        sensor_key.split("_")[0] if "_" in sensor_key else sensor_key
+                    ),
                     "sensor.value": value,
                     "sensor.unit": sensor["unit"],
                     "sensor.expected_min": sensor["nominal_min"],

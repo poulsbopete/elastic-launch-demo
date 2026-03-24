@@ -12,18 +12,18 @@ class UITheme:
     """Visual theme for a scenario's UI pages."""
 
     # Colors
-    bg_primary: str = "#0d1117"         # Main background
-    bg_secondary: str = "#161b22"       # Card/panel backgrounds
-    bg_tertiary: str = "#21262d"        # Input/accent backgrounds
-    accent_primary: str = "#00BFB3"     # Primary accent (buttons, borders)
-    accent_secondary: str = "#58a6ff"   # Secondary accent
-    text_primary: str = "#e6edf3"       # Main text
-    text_secondary: str = "#8b949e"     # Muted text
-    text_accent: str = "#00BFB3"        # Highlighted text
-    status_nominal: str = "#3fb950"     # Green — healthy
-    status_warning: str = "#d29922"     # Amber — degraded
-    status_critical: str = "#f85149"    # Red — error
-    status_info: str = "#58a6ff"        # Blue — info
+    bg_primary: str = "#0d1117"  # Main background
+    bg_secondary: str = "#161b22"  # Card/panel backgrounds
+    bg_tertiary: str = "#21262d"  # Input/accent backgrounds
+    accent_primary: str = "#00BFB3"  # Primary accent (buttons, borders)
+    accent_secondary: str = "#58a6ff"  # Secondary accent
+    text_primary: str = "#e6edf3"  # Main text
+    text_secondary: str = "#8b949e"  # Muted text
+    text_accent: str = "#00BFB3"  # Highlighted text
+    status_nominal: str = "#3fb950"  # Green — healthy
+    status_warning: str = "#d29922"  # Amber — degraded
+    status_critical: str = "#f85149"  # Red — error
+    status_info: str = "#58a6ff"  # Blue — info
 
     # Typography
     font_family: str = "'Inter', 'Segoe UI', system-ui, sans-serif"
@@ -31,38 +31,40 @@ class UITheme:
     font_size_base: str = "14px"
 
     # Effects
-    scanline_effect: bool = False       # CRT scanline overlay (Space theme)
-    glow_effect: bool = False           # Neon glow on accents (Gaming theme)
-    grid_background: bool = False       # Subtle grid pattern (Fanatics theme)
-    gradient_accent: str = ""           # CSS gradient for accent areas
+    scanline_effect: bool = False  # CRT scanline overlay (Space theme)
+    glow_effect: bool = False  # Neon glow on accents (Gaming theme)
+    grid_background: bool = False  # Subtle grid pattern (Fanatics theme)
+    gradient_accent: str = ""  # CSS gradient for accent areas
 
     # Terminology
     dashboard_title: str = "Operations Dashboard"
     chaos_title: str = "Incident Simulator"
     landing_title: str = "Control Center"
-    service_label: str = "Service"      # "Service", "System", "Module"
-    channel_label: str = "Channel"      # "Channel", "Scenario", "Incident"
+    service_label: str = "Service"  # "Service", "System", "Module"
+    channel_label: str = "Channel"  # "Channel", "Scenario", "Incident"
 
     # CSS custom properties dict (for injection into templates)
     def to_css_vars(self) -> str:
         """Generate CSS custom property declarations."""
-        return "\n".join([
-            f"  --bg-primary: {self.bg_primary};",
-            f"  --bg-secondary: {self.bg_secondary};",
-            f"  --bg-tertiary: {self.bg_tertiary};",
-            f"  --accent-primary: {self.accent_primary};",
-            f"  --accent-secondary: {self.accent_secondary};",
-            f"  --text-primary: {self.text_primary};",
-            f"  --text-secondary: {self.text_secondary};",
-            f"  --text-accent: {self.text_accent};",
-            f"  --status-nominal: {self.status_nominal};",
-            f"  --status-warning: {self.status_warning};",
-            f"  --status-critical: {self.status_critical};",
-            f"  --status-info: {self.status_info};",
-            f"  --font-family: {self.font_family};",
-            f"  --font-mono: {self.font_mono};",
-            f"  --font-size-base: {self.font_size_base};",
-        ])
+        return "\n".join(
+            [
+                f"  --bg-primary: {self.bg_primary};",
+                f"  --bg-secondary: {self.bg_secondary};",
+                f"  --bg-tertiary: {self.bg_tertiary};",
+                f"  --accent-primary: {self.accent_primary};",
+                f"  --accent-secondary: {self.accent_secondary};",
+                f"  --text-primary: {self.text_primary};",
+                f"  --text-secondary: {self.text_secondary};",
+                f"  --text-accent: {self.text_accent};",
+                f"  --status-nominal: {self.status_nominal};",
+                f"  --status-warning: {self.status_warning};",
+                f"  --status-critical: {self.status_critical};",
+                f"  --status-info: {self.status_info};",
+                f"  --font-family: {self.font_family};",
+                f"  --font-mono: {self.font_mono};",
+                f"  --font-size-base: {self.font_size_base};",
+            ]
+        )
 
 
 @dataclass
@@ -272,13 +274,15 @@ class BaseScenario(ABC):
             cluster = next(
                 (c for c in self.k8s_clusters if c["provider"] == provider), {}
             )
-            groups.append({
-                "label": f"**{provider.upper()}** {cluster.get('region', '')}",
-                "services": svcs,
-                "x_start": x_starts[i],
-                "col_width": col_widths[i],
-                "cluster": cluster.get("name", ""),
-            })
+            groups.append(
+                {
+                    "label": f"**{provider.upper()}** {cluster.get('region', '')}",
+                    "services": svcs,
+                    "x_start": x_starts[i],
+                    "col_width": col_widths[i],
+                    "cluster": cluster.get("name", ""),
+                }
+            )
         return groups
 
     @property
@@ -307,7 +311,9 @@ class BaseScenario(ABC):
         kb_index = f"{self.namespace}-knowledge-base"
 
         registry_values = list(self.channel_registry.values())
-        example_error = registry_values[0]["error_type"] if registry_values else "SomeException"
+        example_error = (
+            registry_values[0]["error_type"] if registry_values else "SomeException"
+        )
 
         tools = [
             {
@@ -321,11 +327,11 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        'FROM logs.otel,logs.otel.* '
-                        '| WHERE @timestamp > NOW() - 15 MINUTES '
+                        "FROM logs.otel,logs.otel.* "
+                        "| WHERE @timestamp > NOW() - 15 MINUTES "
                         'AND body.text LIKE ?error_type AND severity_text == "ERROR" '
-                        '| KEEP @timestamp, body.text, service.name, severity_text, event_name '
-                        '| SORT @timestamp DESC | LIMIT 50'
+                        "| KEEP @timestamp, body.text, service.name, severity_text, event_name "
+                        "| SORT @timestamp DESC | LIMIT 50"
                     ),
                     "params": {
                         "error_type": {
@@ -347,12 +353,12 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        'FROM logs.otel,logs.otel.* '
-                        '| WHERE @timestamp > NOW() - 15 MINUTES '
+                        "FROM logs.otel,logs.otel.* "
+                        "| WHERE @timestamp > NOW() - 15 MINUTES "
                         '| STATS error_count = COUNT(*) WHERE severity_text == "ERROR", '
                         'warn_count = COUNT(*) WHERE severity_text == "WARN", '
-                        'total = COUNT(*) BY service.name '
-                        '| SORT error_count DESC'
+                        "total = COUNT(*) BY service.name "
+                        "| SORT error_count DESC"
                     ),
                     "params": {},
                 },
@@ -367,12 +373,12 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        'FROM logs.otel,logs.otel.* '
-                        '| WHERE @timestamp > NOW() - 15 MINUTES '
-                        'AND service.name == ?service_name '
+                        "FROM logs.otel,logs.otel.* "
+                        "| WHERE @timestamp > NOW() - 15 MINUTES "
+                        "AND service.name == ?service_name "
                         'AND severity_text IN ("ERROR", "WARN") '
-                        '| KEEP @timestamp, body.text, service.name, severity_text '
-                        '| SORT @timestamp DESC | LIMIT 50'
+                        "| KEEP @timestamp, body.text, service.name, severity_text "
+                        "| SORT @timestamp DESC | LIMIT 50"
                     ),
                     "params": {
                         "service_name": {
@@ -406,12 +412,12 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        'FROM logs.otel,logs.otel.* '
-                        '| WHERE @timestamp > NOW() - 15 MINUTES '
+                        "FROM logs.otel,logs.otel.* "
+                        "| WHERE @timestamp > NOW() - 15 MINUTES "
                         'AND severity_text IN ("ERROR", "WARN") '
                         '| STATS error_count = COUNT(*) WHERE severity_text == "ERROR", '
                         'warn_count = COUNT(*) WHERE severity_text == "WARN" '
-                        'BY service.name | SORT error_count DESC'
+                        "BY service.name | SORT error_count DESC"
                     ),
                     "params": {},
                 },
@@ -426,11 +432,11 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        'FROM logs.otel,logs.otel.* '
-                        '| WHERE @timestamp > NOW() - 15 MINUTES '
+                        "FROM logs.otel,logs.otel.* "
+                        "| WHERE @timestamp > NOW() - 15 MINUTES "
                         'AND severity_text IN ("ERROR", "WARN") '
-                        '| KEEP @timestamp, body.text, service.name, severity_text '
-                        '| SORT @timestamp DESC | LIMIT 50'
+                        "| KEEP @timestamp, body.text, service.name, severity_text "
+                        "| SORT @timestamp DESC | LIMIT 50"
                     ),
                     "params": {},
                 },
@@ -439,21 +445,23 @@ class BaseScenario(ABC):
 
         # Add scenario-specific assessment tool
         assessment = self.assessment_tool_config
-        tools.append({
-            "id": assessment["id"],
-            "type": "esql",
-            "description": assessment["description"],
-            "configuration": {
-                "query": (
-                    'FROM logs.otel,logs.otel.* '
-                    '| WHERE @timestamp > NOW() - 15 MINUTES '
-                    'AND severity_text IN ("ERROR", "WARN") '
-                    '| STATS error_count = COUNT(*) WHERE severity_text == "ERROR", '
-                    'warn_count = COUNT(*) WHERE severity_text == "WARN" '
-                    'BY service.name | SORT error_count DESC'
-                ),
-                "params": {},
-            },
-        })
+        tools.append(
+            {
+                "id": assessment["id"],
+                "type": "esql",
+                "description": assessment["description"],
+                "configuration": {
+                    "query": (
+                        "FROM logs.otel,logs.otel.* "
+                        "| WHERE @timestamp > NOW() - 15 MINUTES "
+                        'AND severity_text IN ("ERROR", "WARN") '
+                        '| STATS error_count = COUNT(*) WHERE severity_text == "ERROR", '
+                        'warn_count = COUNT(*) WHERE severity_text == "WARN" '
+                        "BY service.name | SORT error_count DESC"
+                    ),
+                    "params": {},
+                },
+            }
+        )
 
         return tools
