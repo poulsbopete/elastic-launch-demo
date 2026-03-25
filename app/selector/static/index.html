@@ -790,11 +790,29 @@
         setTimeout(() => pollProgress(deploymentId), 1500);
     }
 
+    function showConfirm(message) {
+        return new Promise(resolve => {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;';
+            overlay.innerHTML = `
+                <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:28px 32px;max-width:420px;width:90%;">
+                    <p style="color:var(--text);font-size:14px;margin-bottom:24px;line-height:1.5;">${message}</p>
+                    <div style="display:flex;gap:12px;justify-content:flex-end;">
+                        <button id="_confirm-cancel" style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">Cancel</button>
+                        <button id="_confirm-ok" style="background:rgba(248,81,73,0.15);color:var(--red);border:1px solid rgba(248,81,73,0.4);border-radius:8px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">Stop &amp; Teardown</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+            overlay.querySelector('#_confirm-ok').onclick = () => { document.body.removeChild(overlay); resolve(true); };
+            overlay.querySelector('#_confirm-cancel').onclick = () => { document.body.removeChild(overlay); resolve(false); };
+        });
+    }
+
     async function stopAndTeardown(deploymentId) {
         // Find the scenario name for display
         const dep = activeDeployments.find(d => d.deployment_id === deploymentId);
         const scenarioName = dep ? dep.scenario_name : deploymentId;
-        if (!confirm('Stop generators and remove artifacts for ' + scenarioName + '?')) return;
+        if (!await showConfirm('Stop generators and remove artifacts for <strong>' + scenarioName + '</strong>?')) return;
 
         // Disable the teardown button to prevent double-clicks
         const btns = document.querySelectorAll('button[onclick*="stopAndTeardown"]');
