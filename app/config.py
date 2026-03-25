@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Environment Configuration ──────────────────────────────────────────────
-OTLP_ENDPOINT = os.getenv("OTLP_ENDPOINT", "http://otel-collector:4318")
+OTLP_ENDPOINT = os.getenv("OTLP_ENDPOINT", "")
 OTLP_API_KEY = os.getenv("OTLP_API_KEY", "")
 OTLP_AUTH_TYPE = os.getenv("OTLP_AUTH_TYPE", "ApiKey")  # "ApiKey" or "Bearer"
 
