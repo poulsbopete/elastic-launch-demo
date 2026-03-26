@@ -549,12 +549,7 @@ class ScenarioDeployer:
         step.items_total = len(workflow_yamls)
 
         for name, yaml_content in workflow_yamls.items():
-            body = json.dumps({"yaml": yaml_content})
-            resp = client.post(
-                f"{self.kibana_url}/api/workflows",
-                headers=_kibana_headers(self.api_key),
-                content=body,
-            )
+            resp = self._wf_create(client, yaml_content)
             if resp.status_code < 300:
                 # Extract workflow ID from response
                 try:
@@ -1318,21 +1313,14 @@ When the user asks you to fix or remediate this issue, use remediation_action to
 
         if not notification_wf_id:
             # Search for it
-            resp = client.post(
-                f"{self.kibana_url}/api/workflows/search",
-                headers=_kibana_headers(self.api_key),
-                json={"page": 1, "size": 100},
-            )
-            if resp.status_code < 300:
-                try:
-                    data = resp.json()
-                    items = data if isinstance(data, list) else data.get("results", data.get("items", []))
-                    for item in items:
-                        if "Notification" in item.get("name", "") or "Significant" in item.get("name", ""):
-                            notification_wf_id = item["id"]
-                            break
-                except Exception:
-                    pass
+            try:
+                items = self._wf_search(client)
+                for item in items:
+                    if "Notification" in item.get("name", "") or "Significant" in item.get("name", ""):
+                        notification_wf_id = item["id"]
+                        break
+            except Exception:
+                pass
 
         if not notification_wf_id:
             step.status = "failed"
@@ -1518,26 +1506,16 @@ When the user asks you to fix or remediate this issue, use remediation_action to
 
         # Delete workflows matching ANY known scenario name
         try:
-            resp = client.post(
-                f"{self.kibana_url}/api/workflows/search",
-                headers=_kibana_headers(self.api_key),
-                json={"page": 1, "size": 100},
-            )
-            if resp.status_code < 300:
-                data = resp.json()
-                items = data if isinstance(data, list) else data.get("results", data.get("items", []))
-                for item in items:
-                    wf_name = item.get("name", "")
-                    for sn in all_scenario_names:
-                        if sn in wf_name:
-                            wf_id = item.get("id", "")
-                            if wf_id:
-                                client.delete(
-                                    f"{self.kibana_url}/api/workflows/{wf_id}",
-                                    headers=_kibana_headers(self.api_key),
-                                )
-                                deleted += 1
-                            break
+            items = self._wf_search(client)
+            for item in items:
+                wf_name = item.get("name", "")
+                for sn in all_scenario_names:
+                    if sn in wf_name:
+                        wf_id = item.get("id", "")
+                        if wf_id:
+                            self._wf_delete(client, wf_id)
+                            deleted += 1
+                        break
         except Exception:
             pass
 
@@ -1658,31 +1636,69 @@ When the user asks you to fix or remediate this issue, use remediation_action to
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    # ── Workflow API helpers (try new paths, fall back to old) ─────────
+
+    def _wf_create(self, client: httpx.Client, yaml_content: str) -> httpx.Response:
+        """POST a single workflow. Tries new path first, falls back to old."""
+        body = json.dumps({"yaml": yaml_content})
+        resp = client.post(
+            f"{self.kibana_url}/api/workflows/workflow",
+            headers=_kibana_headers(self.api_key),
+            content=body,
+        )
+        if resp.status_code in (404, 405):
+            resp = client.post(
+                f"{self.kibana_url}/api/workflows",
+                headers=_kibana_headers(self.api_key),
+                content=body,
+            )
+        return resp
+
+    def _wf_search(self, client: httpx.Client) -> list:
+        """Return all workflow items. Tries new GET path first, falls back to POST search."""
+        resp = client.get(
+            f"{self.kibana_url}/api/workflows",
+            headers=_kibana_headers(self.api_key),
+        )
+        if resp.status_code in (404, 405):
+            resp = client.post(
+                f"{self.kibana_url}/api/workflows/search",
+                headers=_kibana_headers(self.api_key),
+                json={"page": 1, "size": 100},
+            )
+        if resp.status_code >= 300:
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else data.get("results", data.get("items", []))
+
+    def _wf_delete(self, client: httpx.Client, wf_id: str) -> httpx.Response:
+        """Delete a workflow by ID. Tries new path first, falls back to old."""
+        resp = client.delete(
+            f"{self.kibana_url}/api/workflows/workflow/{wf_id}",
+            headers=_kibana_headers(self.api_key),
+        )
+        if resp.status_code in (404, 405):
+            resp = client.delete(
+                f"{self.kibana_url}/api/workflows/{wf_id}",
+                headers=_kibana_headers(self.api_key),
+            )
+        return resp
+
     # ── Cleanup helpers ────────────────────────────────────────────────
 
     def _cleanup_workflows(self, client: httpx.Client) -> int:
         """Delete workflows matching this scenario's name."""
         deleted = 0
         try:
-            resp = client.post(
-                f"{self.kibana_url}/api/workflows/search",
-                headers=_kibana_headers(self.api_key),
-                json={"page": 1, "size": 100},
-            )
-            if resp.status_code < 300:
-                data = resp.json()
-                items = data if isinstance(data, list) else data.get("results", data.get("items", []))
-                scenario_name = self.scenario.scenario_name
-                for item in items:
-                    if scenario_name in item.get("name", "") or f"{self.ns}-" in item.get("name", "").lower():
-                        wf_id = item.get("id", "")
-                        if wf_id:
-                            r = client.delete(
-                                f"{self.kibana_url}/api/workflows/{wf_id}",
-                                headers=_kibana_headers(self.api_key),
-                            )
-                            if r.status_code < 300:
-                                deleted += 1
+            items = self._wf_search(client)
+            scenario_name = self.scenario.scenario_name
+            for item in items:
+                if scenario_name in item.get("name", "") or f"{self.ns}-" in item.get("name", "").lower():
+                    wf_id = item.get("id", "")
+                    if wf_id:
+                        r = self._wf_delete(client, wf_id)
+                        if r.status_code < 300:
+                            deleted += 1
         except Exception:
             pass
         return deleted
