@@ -329,6 +329,8 @@ class OTLPClient:
         return res
 
     def _send(self, url: str, payload: dict, signal_name: str) -> None:
+        if not self.endpoint:
+            return  # No endpoint configured yet; silently drop until reconfigure() is called
         if self.consecutive_failures >= self.max_failures_before_backoff:
             # Exponential backoff — skip sending
             backoff = min(

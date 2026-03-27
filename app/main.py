@@ -91,6 +91,16 @@ async def lifespan(app: FastAPI):
         if not elastic_url and ".kb." in kibana_url:
             elastic_url = kibana_url.replace(".kb.", ".es.")
 
+        # Pre-compute an OTLP URL from the ES URL as a last-resort fallback.
+        # The deployer probes the endpoint to verify it; if that probe fails the
+        # deployer returns an empty otlp_endpoint. This fallback is used in that
+        # case so telemetry isn't silently dropped.
+        _pre_derived_otlp = ""
+        if elastic_url and ".es." in elastic_url:
+            _pre_derived_otlp = elastic_url.replace(".es.", ".ingest.").rstrip("/")
+            if not _pre_derived_otlp.endswith(":443"):
+                _pre_derived_otlp += ":443"
+
         logger.info("Auto-deploy triggered from environment variables (scenario=%s)", scenario_id)
 
         scenario = get_scenario(scenario_id)
@@ -114,8 +124,8 @@ async def lifespan(app: FastAPI):
 
         def _auto_deploy():
             result = deployer.deploy_all(callback=_progress_cb)
-            # Explicit env var takes priority, then deployer-derived, then default config
-            otlp_endpoint = OTLP_ENDPOINT or result.otlp_endpoint or ""
+            # Priority: explicit env var → deployer-verified → pre-derived fallback
+            otlp_endpoint = OTLP_ENDPOINT or result.otlp_endpoint or _pre_derived_otlp
             try:
                 ctx = ScenarioContext.from_scenario(
                     scenario,
