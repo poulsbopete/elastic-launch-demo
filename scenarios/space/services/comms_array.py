@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import random
+import time
 
 from app.services.base_service import BaseService
 
 
 class CommsArrayService(BaseService):
     SERVICE_NAME = "comms-array"
+
+    def __init__(self, chaos_controller, otlp_client):
+        super().__init__(chaos_controller, otlp_client)
+        self._frame_count = 0
+        self._last_link_report = time.time()
 
     ANTENNAS = {
         "s_band": {
@@ -63,14 +69,30 @@ class CommsArrayService(BaseService):
             )
 
         # ── Link budget summary ────────────────────────────────
+        self._frame_count += 1
         total_throughput = round(random.uniform(45.0, 65.0), 1)
         self.emit_metric("comms.total_throughput_mbps", total_throughput, "Mbps")
-        self.emit_log(
-            "INFO",
-            f"[COMM] link_budget throughput={total_throughput}Mbps margin=+3.2dB status=NOMINAL",
-            {
-                "operation": "link_budget",
-                "comms.throughput_mbps": total_throughput,
-                "comms.status": "NOMINAL",
-            },
-        )
+        self.emit_metric("comms.frame_count", float(self._frame_count), "frames")
+
+        if time.time() - self._last_link_report > 10:
+            self.emit_log(
+                "INFO",
+                f"[COMM] link_budget throughput={total_throughput}Mbps margin=+3.2dB frames={self._frame_count} status=NOMINAL",
+                {
+                    "operation": "link_budget",
+                    "comms.throughput_mbps": total_throughput,
+                    "comms.frame_count": self._frame_count,
+                    "comms.status": "NOMINAL",
+                },
+            )
+            self._last_link_report = time.time()
+        else:
+            self.emit_log(
+                "INFO",
+                f"[COMM] link_budget throughput={total_throughput}Mbps margin=+3.2dB status=NOMINAL",
+                {
+                    "operation": "link_budget",
+                    "comms.throughput_mbps": total_throughput,
+                    "comms.status": "NOMINAL",
+                },
+            )

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import random
+import time
 
 from app.services.base_service import BaseService
 
 
 class NavigationService(BaseService):
     SERVICE_NAME = "navigation"
+
+    def __init__(self, chaos_controller, otlp_client):
+        super().__init__(chaos_controller, otlp_client)
+        self._fix_count = 0
+        self._last_nav_report = time.time()
 
     NAV_SYSTEMS = {
         "gps": {
@@ -44,14 +50,17 @@ class NavigationService(BaseService):
         gps_conf = round(random.uniform(*gps["confidence_range"]), 4)
         gps_sats = random.randint(*gps["satellites_range"])
 
+        self._fix_count += 1
         self.emit_metric("navigation.gps.drift_ms", gps_drift, "ms")
         self.emit_metric("navigation.gps.confidence", gps_conf, "ratio")
         self.emit_metric("navigation.gps.satellites", float(gps_sats), "count")
+        self.emit_metric("navigation.fix_count", float(self._fix_count), "fixes")
         self.emit_log(
             "INFO",
-            f"[GNC] gps_fix sv_count={gps_sats} drift={gps_drift}ms confidence={gps_conf} solution=NOMINAL",
+            f"[GNC] gps_fix fix={self._fix_count} sv_count={gps_sats} drift={gps_drift}ms confidence={gps_conf} solution=NOMINAL",
             {
                 "nav.system": "gps",
+                "nav.fix_count": self._fix_count,
                 "nav.drift_ms": gps_drift,
                 "nav.confidence": gps_conf,
                 "nav.gps_satellites": gps_sats,
