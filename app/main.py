@@ -13,9 +13,18 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import (
-    ACTIVE_SCENARIO, APP_HOST, APP_PORT, CHANNEL_REGISTRY,
-    ELASTIC_API_KEY, ELASTIC_URL, KIBANA_URL,
-    MISSION_ID, MISSION_NAME, NAMESPACE, OTLP_ENDPOINT, SERVICES,
+    ACTIVE_SCENARIO,
+    APP_HOST,
+    APP_PORT,
+    CHANNEL_REGISTRY,
+    ELASTIC_API_KEY,
+    ELASTIC_URL,
+    KIBANA_URL,
+    MISSION_ID,
+    MISSION_NAME,
+    NAMESPACE,
+    OTLP_ENDPOINT,
+    SERVICES,
 )
 
 logging.basicConfig(
@@ -71,7 +80,9 @@ async def lifespan(app: FastAPI):
             instance = ScenarioInstance(ctx, chaos_store=chaos_store)
             instance.start()
             registry.register(rec["deployment_id"], instance)
-            logger.info("Restored deployment: %s (%s)", rec["deployment_id"], rec["scenario_id"])
+            logger.info(
+                "Restored deployment: %s (%s)", rec["deployment_id"], rec["scenario_id"]
+            )
         except Exception:
             logger.exception("Failed to restore deployment %s", rec["deployment_id"])
             store.set_status(rec["deployment_id"], "error")
@@ -101,7 +112,10 @@ async def lifespan(app: FastAPI):
             if not _pre_derived_otlp.endswith(":443"):
                 _pre_derived_otlp += ":443"
 
-        logger.info("Auto-deploy triggered from environment variables (scenario=%s)", scenario_id)
+        logger.info(
+            "Auto-deploy triggered from environment variables (scenario=%s)",
+            scenario_id,
+        )
 
         scenario = get_scenario(scenario_id)
         deployer = ScenarioDeployer(scenario, elastic_url, kibana_url, api_key)
@@ -193,12 +207,14 @@ app.mount(
 
 # ── Scenario helper ──────────────────────────────────────────────────────────
 
+
 def _get_scenario_for_deployment(deployment_id: Optional[str] = None):
     """Get scenario object from a running instance or fall back to default."""
     inst = _get_instance(deployment_id)
     if inst:
         return inst.ctx.scenario
     from scenarios import get_scenario
+
     return get_scenario(ACTIVE_SCENARIO)
 
 
@@ -211,6 +227,7 @@ def _inject_theme(html: str, deployment_id: Optional[str] = None) -> str:
         kibana = inst.ctx.kibana_url or _get_default_creds()[1]
     else:
         from scenarios import get_scenario
+
         scenario = get_scenario(ACTIVE_SCENARIO)
         mission_id = MISSION_ID
         kibana = _get_default_creds()[1]
@@ -250,6 +267,7 @@ body {{ font-family: {theme.font_family}; }}"""
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
+
 def _get_default_creds() -> tuple[str, str, str]:
     """Get (elastic_url, kibana_url, api_key) from first active deployment in store."""
     recs = store.get_all_active()
@@ -260,6 +278,7 @@ def _get_default_creds() -> tuple[str, str, str]:
 
 
 # ── Scenario Selector (new front page) ───────────────────────────────────────
+
 
 @app.get("/", response_class=HTMLResponse)
 async def selector_page():
@@ -273,6 +292,7 @@ async def selector_page():
 
 
 # ── Per-Scenario Landing Page ─────────────────────────────────────────────────
+
 
 @app.get("/home", response_class=HTMLResponse)
 async def landing_page(deployment_id: Optional[str] = None):
@@ -293,6 +313,7 @@ async def slides_page(deployment_id: Optional[str] = None):
 
 # ── Health ──────────────────────────────────────────────────────────────────
 
+
 @app.get("/health")
 async def health():
     instances = registry.all_instances()
@@ -304,6 +325,7 @@ async def health():
 
 
 # ── Dashboard ───────────────────────────────────────────────────────────────
+
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(deployment_id: Optional[str] = None):
@@ -329,6 +351,7 @@ async def ws_dashboard(websocket: WebSocket):
 
 # ── Chaos Controller UI ────────────────────────────────────────────────────
 
+
 @app.get("/chaos", response_class=HTMLResponse)
 async def chaos_page(deployment_id: Optional[str] = None):
     path = os.path.join(_base, "chaos_ui", "static", "index.html")
@@ -339,10 +362,12 @@ async def chaos_page(deployment_id: Optional[str] = None):
 
 # ── Scenario API ───────────────────────────────────────────────────────────
 
+
 @app.get("/api/scenarios")
 async def list_scenarios():
     """List all available scenarios."""
     from scenarios import list_scenarios as _list
+
     return _list()
 
 
@@ -399,20 +424,23 @@ async def current_scenario(deployment_id: Optional[str] = None):
 
 # ── Deployments API (multi-tenancy) ──────────────────────────────────────────
 
+
 @app.get("/api/deployments")
 async def list_deployments():
     """List all active deployments."""
     instances = registry.all_instances()
     result = []
     for dep_id, inst in instances.items():
-        result.append({
-            "deployment_id": dep_id,
-            "scenario_id": inst.scenario_id,
-            "scenario_name": inst.ctx.scenario.scenario_name,
-            "namespace": inst.ctx.namespace,
-            "running": inst.running,
-            "kibana_url": inst.ctx.kibana_url,
-        })
+        result.append(
+            {
+                "deployment_id": dep_id,
+                "scenario_id": inst.scenario_id,
+                "scenario_name": inst.ctx.scenario.scenario_name,
+                "namespace": inst.ctx.namespace,
+                "running": inst.running,
+                "kibana_url": inst.ctx.kibana_url,
+            }
+        )
     return result
 
 
@@ -421,7 +449,9 @@ async def stop_deployment(deployment_id: str):
     """Stop a specific deployment's generators."""
     inst = registry.get(deployment_id)
     if not inst:
-        return JSONResponse(status_code=404, content={"error": f"Deployment {deployment_id} not found"})
+        return JSONResponse(
+            status_code=404, content={"error": f"Deployment {deployment_id} not found"}
+        )
     inst.stop()
     store.set_status(deployment_id, "stopped")
     return {"status": "stopped", "deployment_id": deployment_id}
@@ -439,6 +469,7 @@ async def remove_deployment(deployment_id: str):
 
 # ── Chaos API ───────────────────────────────────────────────────────────────
 
+
 @app.post("/api/chaos/trigger")
 async def chaos_trigger(body: dict):
     deployment_id = body.get("deployment_id")
@@ -452,10 +483,17 @@ async def chaos_trigger(body: dict):
     user_email = body.get("user_email", "")
     session_id = body.get("session_id", "")
     result = inst.chaos_controller.trigger(
-        channel, mode, se_name, callback_url, user_email, session_id=session_id,
+        channel,
+        mode,
+        se_name,
+        callback_url,
+        user_email,
+        session_id=session_id,
     )
     if inst.dashboard_ws:
-        await inst.dashboard_ws.broadcast_status(inst.chaos_controller, inst.service_manager)
+        await inst.dashboard_ws.broadcast_status(
+            inst.chaos_controller, inst.service_manager
+        )
     return result
 
 
@@ -471,7 +509,9 @@ async def chaos_resolve(body: dict):
     if result.get("error") == "session_mismatch":
         return JSONResponse(status_code=403, content=result)
     if inst.dashboard_ws:
-        await inst.dashboard_ws.broadcast_status(inst.chaos_controller, inst.service_manager)
+        await inst.dashboard_ws.broadcast_status(
+            inst.chaos_controller, inst.service_manager
+        )
     return result
 
 
@@ -489,7 +529,12 @@ async def set_chaos_spikes(body: dict):
 async def get_chaos_spikes(deployment_id: Optional[str] = None):
     inst = _get_instance(deployment_id)
     if not inst:
-        return {"cpu_pct": 0, "memory_pct": 0, "k8s_oom_intensity": 0, "latency_multiplier": 1.0}
+        return {
+            "cpu_pct": 0,
+            "memory_pct": 0,
+            "k8s_oom_intensity": 0,
+            "latency_multiplier": 1.0,
+        }
     return inst.chaos_controller.get_infra_spikes()
 
 
@@ -521,6 +566,7 @@ async def chaos_session_validate(session_id: str, deployment_id: Optional[str] =
 
 # ── Status API ──────────────────────────────────────────────────────────────
 
+
 @app.get("/api/status")
 async def system_status(deployment_id: Optional[str] = None):
     inst = _get_instance(deployment_id)
@@ -539,6 +585,7 @@ async def system_status(deployment_id: Optional[str] = None):
 
 
 # ── Countdown Control ──────────────────────────────────────────────────────
+
 
 @app.post("/api/countdown/start")
 async def countdown_start(body: dict = {}):
@@ -579,6 +626,7 @@ async def countdown_speed(body: dict):
 
 # ── Remediation endpoint (called by Elastic Workflow) ──────────────────────
 
+
 @app.post("/api/remediate/{channel}")
 async def remediate_channel(channel: int, deployment_id: Optional[str] = None):
     inst = _get_instance(deployment_id)
@@ -586,19 +634,25 @@ async def remediate_channel(channel: int, deployment_id: Optional[str] = None):
         return JSONResponse(status_code=404, content={"error": "No active deployment"})
     result = inst.chaos_controller.resolve(channel, force=True)
     if inst.dashboard_ws:
-        await inst.dashboard_ws.broadcast_status(inst.chaos_controller, inst.service_manager)
+        await inst.dashboard_ws.broadcast_status(
+            inst.chaos_controller, inst.service_manager
+        )
     return {"action": "remediated", "channel": channel, **result}
 
 
 # ── User Info (for auto-populating email) ─────────────────────────────────
 
+
 @app.get("/api/user/info")
 async def user_info(request: Request):
-    email = request.headers.get("X-Forwarded-User", "")
+    email = request.headers.get("X-Forwarded-User", "") or os.environ.get(
+        "INSTRUQT_USER_EMAIL", ""
+    )
     return {"email": email}
 
 
 # ── Email Notification endpoint (called by Elastic Workflow) ──────────────
+
 
 @app.post("/api/notify/email")
 async def notify_email(body: dict):
@@ -612,6 +666,7 @@ async def notify_email(body: dict):
 
 
 # ── Daily Update Report ────────────────────────────────────────────────────
+
 
 @app.post("/api/daily-update")
 async def send_daily_update(body: dict):
@@ -665,7 +720,9 @@ async def send_daily_update(body: dict):
         if not wf_id:
             return JSONResponse(
                 status_code=404,
-                content={"error": "Daily Update Report workflow not found — redeploy the scenario"},
+                content={
+                    "error": "Daily Update Report workflow not found — redeploy the scenario"
+                },
             )
 
         # Trigger the workflow
@@ -689,6 +746,7 @@ async def send_daily_update(body: dict):
 
 # ── Setup / Deployer API ───────────────────────────────────────────────────
 
+
 @app.post("/api/setup/test-connection")
 async def test_connection(body: dict):
     """Test connectivity to an Elastic environment."""
@@ -707,7 +765,10 @@ async def test_connection(body: dict):
         elastic_url = kibana_url.replace(".kb.", ".es.")
 
     if not elastic_url:
-        return {"ok": False, "error": "Cannot derive Elasticsearch URL — provide it in Advanced settings"}
+        return {
+            "ok": False,
+            "error": "Cannot derive Elasticsearch URL — provide it in Advanced settings",
+        }
 
     # Derive OTLP endpoint
     otlp_url = body.get("otlp_url") or ""
@@ -785,7 +846,9 @@ async def launch_setup(body: dict):
         if old_inst:
             try:
                 old_inst.stop()
-                logger.info("Stopped existing instance %s before redeploy", deployment_id)
+                logger.info(
+                    "Stopped existing instance %s before redeploy", deployment_id
+                )
             except Exception as exc:
                 logger.warning("Error stopping old instance: %s", exc)
 
@@ -809,7 +872,9 @@ async def launch_setup(body: dict):
             # Reconfigure OTLP if we have an endpoint
             if otlp_endpoint:
                 instance.otlp.reconfigure(otlp_endpoint, api_key)
-                logger.info("OTLPClient for %s reconfigured to %s", scenario_id, otlp_endpoint)
+                logger.info(
+                    "OTLPClient for %s reconfigured to %s", scenario_id, otlp_endpoint
+                )
 
             instance.start()
             registry.register(deployment_id, instance)
@@ -833,7 +898,11 @@ async def launch_setup(body: dict):
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
 
-    return {"status": "started", "scenario": scenario_id, "deployment_id": deployment_id}
+    return {
+        "status": "started",
+        "scenario": scenario_id,
+        "deployment_id": deployment_id,
+    }
 
 
 @app.get("/api/setup/progress")
@@ -928,15 +997,19 @@ async def stop_and_teardown(body: dict = {}):
         if inst:
             try:
                 inst.stop()
-                logger.info("Stopped deployment %s via stop-and-teardown", deployment_id)
+                logger.info(
+                    "Stopped deployment %s via stop-and-teardown", deployment_id
+                )
             except Exception as exc:
                 logger.warning("Error stopping deployment %s: %s", deployment_id, exc)
 
             # Run teardown in background thread with progress
             if inst.ctx.elastic_url and inst.ctx.elastic_api_key:
                 deployer = ScenarioDeployer(
-                    inst.ctx.scenario, inst.ctx.elastic_url,
-                    inst.ctx.kibana_url, inst.ctx.elastic_api_key,
+                    inst.ctx.scenario,
+                    inst.ctx.elastic_url,
+                    inst.ctx.kibana_url,
+                    inst.ctx.elastic_api_key,
                 )
 
                 def _progress_cb(progress):
@@ -946,7 +1019,11 @@ async def stop_and_teardown(body: dict = {}):
                     deployer.teardown_with_progress(callback=_progress_cb)
                     store.delete(deployment_id)
 
-                _teardown_progress[deployment_id] = {"finished": False, "error": "", "steps": []}
+                _teardown_progress[deployment_id] = {
+                    "finished": False,
+                    "error": "",
+                    "steps": [],
+                }
                 thread = threading.Thread(target=_run_teardown, daemon=True)
                 thread.start()
 
@@ -965,8 +1042,12 @@ async def stop_and_teardown(body: dict = {}):
         elastic_url, kibana_url, api_key = _get_default_creds()
 
         if not elastic_url or not api_key:
-            return {"ok": True, "generators_stopped": True, "artifacts_deleted": 0,
-                    "note": "No Elastic credentials — generators stopped but no artifacts to clean"}
+            return {
+                "ok": True,
+                "generators_stopped": True,
+                "artifacts_deleted": 0,
+                "note": "No Elastic credentials — generators stopped but no artifacts to clean",
+            }
 
         result = ScenarioDeployer.cleanup_all(elastic_url, kibana_url, api_key)
 
