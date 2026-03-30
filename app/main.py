@@ -788,42 +788,63 @@ async def send_daily_update(body: dict):
 
 @app.post("/api/setup/test-connection")
 async def test_connection(body: dict):
-    """Test connectivity to an Elastic environment."""
+    """Test connectivity to each component independently."""
     from scenarios import get_scenario as _get_scenario_by_id
     from elastic_config.deployer import ScenarioDeployer
+    from elastic_config.deployer_base import _kibana_headers, _es_headers
+    import httpx
 
     kibana_url = body.get("kibana_url", "").strip().rstrip("/")
     api_key = body.get("api_key", "").strip()
 
     if not kibana_url or not api_key:
-        return {"ok": False, "error": "Missing kibana_url or api_key"}
+        return {"error": "Missing kibana_url or api_key"}
 
-    elastic_url = _derive_elastic_url(kibana_url, api_key, explicit=body.get("elastic_url") or "")
+    result = {}
 
-    if not elastic_url:
-        return {
-            "ok": False,
-            "error": "Cannot derive Elasticsearch URL — provide it in Advanced settings",
-        }
+    with httpx.Client(timeout=15.0, verify=True) as client:
+        # Test Kibana — use an auth-required endpoint so a bad API key fails
+        try:
+            resp = client.get(f"{kibana_url}/api/spaces/space", headers=_kibana_headers(api_key))
+            result["kibana_ok"] = resp.status_code < 300
+            result["kibana_error"] = None if result["kibana_ok"] else f"HTTP {resp.status_code}"
+        except Exception as exc:
+            result["kibana_ok"] = False
+            result["kibana_error"] = str(exc)
 
-    scenario_id = body.get("scenario_id", ACTIVE_SCENARIO)
-    scenario = _get_scenario_by_id(scenario_id)
-    deployer = ScenarioDeployer(scenario, elastic_url, kibana_url, api_key)
-    result = deployer.check_connection()
+        # Derive ES URL and test
+        elastic_url = _derive_elastic_url(kibana_url, api_key, explicit=body.get("elastic_url") or "")
+        result["elastic_url"] = elastic_url or None
 
-    # Derive and verify OTLP endpoint
-    explicit_otlp = body.get("otlp_url") or ""
-    if result.get("ok"):
-        import httpx
-        with httpx.Client(timeout=15.0, verify=True) as client:
-            otlp_url = explicit_otlp or deployer._derive_otlp_endpoint(client) or ""
-        result["otlp_endpoint"] = otlp_url or None
-        result["otlp_ok"] = bool(otlp_url)
-    else:
-        result["otlp_endpoint"] = None
-        result["otlp_ok"] = False
+        if elastic_url:
+            try:
+                resp = client.get(f"{elastic_url}/", headers=_es_headers(api_key))
+                if resp.status_code < 300:
+                    result["es_ok"] = True
+                    result["es_error"] = None
+                    result["cluster_name"] = resp.json().get("cluster_name", "unknown")
+                else:
+                    result["es_ok"] = False
+                    result["es_error"] = f"HTTP {resp.status_code}"
+            except Exception as exc:
+                result["es_ok"] = False
+                result["es_error"] = str(exc)
 
-    result["elastic_url"] = elastic_url
+            # Derive and test OTLP
+            scenario_id = body.get("scenario_id", ACTIVE_SCENARIO)
+            scenario = _get_scenario_by_id(scenario_id)
+            deployer = ScenarioDeployer(scenario, elastic_url, kibana_url, api_key)
+            explicit_otlp = body.get("otlp_url") or ""
+            if explicit_otlp:
+                otlp_ok = deployer._verify_otlp_candidate(client, explicit_otlp)
+                otlp_url = explicit_otlp if otlp_ok else ""
+            else:
+                otlp_url = deployer._derive_otlp_endpoint(client) or ""
+                otlp_ok = bool(otlp_url)
+            result["otlp_ok"] = otlp_ok
+            result["otlp_error"] = None if otlp_ok else "Endpoint unreachable"
+            result["otlp_endpoint"] = otlp_url or None
+
     return result
 
 
