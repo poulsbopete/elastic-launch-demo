@@ -14,7 +14,7 @@ logger = logging.getLogger("deployer")
 class EventsMixin:
 
     def _deploy_significant_events(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(9)
+        step = self._step(10)
         step.status = "running"
         notify(self.progress)
 

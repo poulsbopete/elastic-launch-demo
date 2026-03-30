@@ -11,7 +11,7 @@ class PlatformMixin:
 
     def _configure_platform_settings(self, client: httpx.Client, notify: ProgressCallback):
         """Enable wired streams, significant events, and agent builder."""
-        step = self._step(3)
+        step = self._step(4)
         step.status = "running"
         notify(self.progress)
 

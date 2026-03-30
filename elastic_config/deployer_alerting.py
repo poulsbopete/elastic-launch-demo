@@ -15,7 +15,7 @@ logger = logging.getLogger("deployer")
 class AlertingMixin:
 
     def _deploy_alerting(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(12)
+        step = self._step(13)
         step.status = "running"
         notify(self.progress)
 

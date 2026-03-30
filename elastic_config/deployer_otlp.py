@@ -10,7 +10,7 @@ from elastic_config.deployer_base import _es_headers, ProgressCallback
 class OtlpMixin:
 
     def _derive_otlp_step(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(1)
+        step = self._step(2)
         step.status = "running"
         notify(self.progress)
 

@@ -74,20 +74,21 @@ class ScenarioDeployer(
         """Run the full deployment pipeline.  Returns progress summary."""
         self.progress = DeployProgress(steps=[
             DeployStep("Connectivity check"),           # 0
-            DeployStep("Derive OTLP endpoint"),         # 1
-            DeployStep("Clean up old artifacts"),       # 2
-            DeployStep("Configure platform settings"),  # 3
-            DeployStep("Generate APM rollup data"),     # 4
-            DeployStep("Deploy workflows", items_total=4),  # 5
-            DeployStep("Index knowledge base", items_total=20),  # 6
-            DeployStep("Deploy AI agent tools", items_total=7),  # 7
-            DeployStep("Create AI agent"),              # 8
-            DeployStep("Create significant events", items_total=20),  # 9
-            DeployStep("Create data views"),            # 10
-            DeployStep("Import executive dashboard"),   # 11
-            DeployStep("Create alert rules", items_total=20),  # 12
-            DeployStep("Enable APM anomaly detection"), # 13
-            DeployStep("Create SLOs", items_total=3),  # 14
+            DeployStep("Derive Elasticsearch URL"),     # 1
+            DeployStep("Derive OTLP endpoint"),         # 2
+            DeployStep("Clean up old artifacts"),       # 3
+            DeployStep("Configure platform settings"),  # 4
+            DeployStep("Generate APM rollup data"),     # 5
+            DeployStep("Deploy workflows", items_total=4),  # 6
+            DeployStep("Index knowledge base", items_total=20),  # 7
+            DeployStep("Deploy AI agent tools", items_total=7),  # 8
+            DeployStep("Create AI agent"),              # 9
+            DeployStep("Create significant events", items_total=20),  # 10
+            DeployStep("Create data views"),            # 11
+            DeployStep("Import executive dashboard"),   # 12
+            DeployStep("Create alert rules", items_total=20),  # 13
+            DeployStep("Enable APM anomaly detection"), # 14
+            DeployStep("Create SLOs", items_total=3),  # 15
         ])
         _notify = callback or (lambda p: None)
         _notify(self.progress)
@@ -95,6 +96,7 @@ class ScenarioDeployer(
         try:
             with httpx.Client(timeout=60.0, verify=True) as client:
                 self._check_connectivity(client, _notify)
+                self._report_elastic_url_step(_notify)
                 self._derive_otlp_step(client, _notify)
                 self._cleanup_all_scenarios_step(client, _notify)
                 self._configure_platform_settings(client, _notify)
@@ -439,11 +441,17 @@ class ScenarioDeployer(
         step.status = "ok"
         notify(self.progress)
 
+    def _report_elastic_url_step(self, notify: ProgressCallback):
+        step = self._step(1)
+        step.status = "ok"
+        step.detail = f"ES: {self.elastic_url}"
+        notify(self.progress)
+
     # ── Cross-scenario cleanup ────────────────────────────────────────
 
     def _cleanup_all_scenarios_step(self, client: httpx.Client, notify: ProgressCallback):
         """Deploy step: clean up artifacts from ALL known scenarios."""
-        step = self._step(2)
+        step = self._step(3)
         step.status = "running"
         notify(self.progress)
 

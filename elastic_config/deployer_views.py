@@ -10,7 +10,7 @@ from elastic_config.deployer_base import _kibana_headers, ProgressCallback
 class DataViewsMixin:
 
     def _deploy_data_views(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(10)
+        step = self._step(11)
         step.status = "running"
         notify(self.progress)
 
