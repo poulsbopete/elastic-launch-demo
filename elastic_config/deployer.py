@@ -106,14 +106,16 @@ class ScenarioDeployer:
             DeployStep("Derive OTLP endpoint"),         # 1
             DeployStep("Clean up old artifacts"),       # 2
             DeployStep("Configure platform settings"),  # 3
-            DeployStep("Deploy workflows", items_total=3),  # 4
-            DeployStep("Index knowledge base", items_total=20),  # 5
-            DeployStep("Deploy AI agent tools", items_total=7),  # 6
-            DeployStep("Create AI agent"),              # 7
-            DeployStep("Create significant events", items_total=20),  # 8
-            DeployStep("Create data views"),            # 9
-            DeployStep("Import executive dashboard"),   # 10
-            DeployStep("Create alert rules", items_total=20),  # 11
+            DeployStep("Generate APM rollup data"),     # 4
+            DeployStep("Deploy workflows", items_total=3),  # 5
+            DeployStep("Index knowledge base", items_total=20),  # 6
+            DeployStep("Deploy AI agent tools", items_total=7),  # 7
+            DeployStep("Create AI agent"),              # 8
+            DeployStep("Create significant events", items_total=20),  # 9
+            DeployStep("Create data views"),            # 10
+            DeployStep("Import executive dashboard"),   # 11
+            DeployStep("Create alert rules", items_total=20),  # 12
+            DeployStep("Enable APM anomaly detection"), # 13
         ])
         _notify = callback or (lambda p: None)
         _notify(self.progress)
@@ -124,6 +126,7 @@ class ScenarioDeployer:
                 self._derive_otlp_step(client, _notify)
                 self._cleanup_all_scenarios_step(client, _notify)
                 self._configure_platform_settings(client, _notify)
+                self._deploy_apm_rollup(client, _notify)
                 self._deploy_workflows(client, _notify)
                 self._deploy_knowledge_base(client, _notify)
                 self._deploy_tools(client, _notify)
@@ -132,6 +135,7 @@ class ScenarioDeployer:
                 self._deploy_data_views(client, _notify)
                 self._deploy_dashboard(client, _notify)
                 self._deploy_alerting(client, _notify)
+                self._deploy_apm_anomaly_detection(client, _notify)
         except Exception as exc:
             self.progress.error = str(exc)
             logger.exception("Deployment failed")
@@ -230,6 +234,10 @@ class ScenarioDeployer:
             )
             results["dashboard"] = resp.status_code < 300
 
+            # Delete APM ML jobs and datafeeds
+            self._cleanup_apm_ml(client)
+            results["apm_ml_cleaned"] = True
+
         return results
 
     def teardown_with_progress(self, callback: ProgressCallback | None = None) -> DeployProgress:
@@ -243,6 +251,8 @@ class ScenarioDeployer:
             DeployStep("Delete knowledge base"),        # 5
             DeployStep("Delete audit indices"),         # 6
             DeployStep("Delete dashboard"),             # 7
+            DeployStep("Delete APM ML jobs"),           # 8
+            DeployStep("Delete APM rollup data"),       # 9
         ])
         _notify = callback or (lambda p: None)
         _notify(progress)
@@ -354,6 +364,51 @@ class ScenarioDeployer:
                     )
                     step.status = "ok"
                     step.detail = "Dashboard deleted" if resp.status_code < 300 else "Dashboard not found"
+                except Exception as exc:
+                    step.status = "failed"
+                    step.detail = str(exc)
+                _notify(progress)
+
+                # Step 8: Delete APM ML jobs
+                step = progress.steps[8]
+                step.status = "running"
+                _notify(progress)
+                try:
+                    self._cleanup_apm_ml(client)
+                    step.status = "ok"
+                    step.detail = "APM ML jobs and datafeeds removed"
+                except Exception as exc:
+                    step.status = "failed"
+                    step.detail = str(exc)
+                _notify(progress)
+
+                # Step 9: Delete APM rollup data streams
+                step = progress.steps[9]
+                step.status = "running"
+                _notify(progress)
+                try:
+                    deleted_ds = 0
+                    for ds_pattern in [
+                        "metrics-transaction.1m.otel-*",
+                        "metrics-service_destination.1m.otel-*",
+                        "metrics-service_summary.1m.otel-*",
+                    ]:
+                        resp = client.get(
+                            f"{self.elastic_url}/_data_stream/{ds_pattern}",
+                            headers=_es_headers(self.api_key),
+                        )
+                        if resp.status_code < 300:
+                            for ds in resp.json().get("data_streams", []):
+                                ds_name = ds.get("name", "")
+                                if ds_name:
+                                    r = client.delete(
+                                        f"{self.elastic_url}/_data_stream/{ds_name}",
+                                        headers=_es_headers(self.api_key),
+                                    )
+                                    if r.status_code < 300:
+                                        deleted_ds += 1
+                    step.status = "ok"
+                    step.detail = f"Deleted {deleted_ds} APM rollup data streams"
                 except Exception as exc:
                     step.status = "failed"
                     step.detail = str(exc)
@@ -589,10 +644,392 @@ class ScenarioDeployer:
 
         notify(self.progress)
 
+    # ── APM Rollup ─────────────────────────────────────────────────────
+
+    def _deploy_apm_rollup(self, client: httpx.Client, notify: ProgressCallback):
+        """Step 4: Generate synthetic APM rollup data and deploy DB ingest pipeline."""
+        from elastic_config.apm_rollup import ApmRollupGenerator
+
+        step = self._step(4)
+        step.status = "running"
+        notify(self.progress)
+
+        try:
+            # Delete stale rollup data streams so timestamps are fresh
+            for ds_pattern in [
+                "metrics-transaction.1m.otel-*",
+                "metrics-service_destination.1m.otel-*",
+                "metrics-service_summary.1m.otel-*",
+            ]:
+                try:
+                    resp = client.get(
+                        f"{self.elastic_url}/_data_stream/{ds_pattern}",
+                        headers=_es_headers(self.api_key),
+                    )
+                    if resp.status_code < 300:
+                        for ds in resp.json().get("data_streams", []):
+                            ds_name = ds.get("name", "")
+                            if ds_name:
+                                client.delete(
+                                    f"{self.elastic_url}/_data_stream/{ds_name}",
+                                    headers=_es_headers(self.api_key),
+                                )
+                except Exception:
+                    pass
+
+            gen = ApmRollupGenerator(self.scenario, self.elastic_url, self.api_key)
+            counts = gen.generate_all(hours=12)
+            total = sum(counts.values())
+
+            self._deploy_db_ingest_pipeline(client)
+            self._set_metrics_look_back_time(client)
+
+            step.status = "ok"
+            step.detail = (
+                f"Inserted {total} rollup docs "
+                f"(tx={counts.get('transaction_1m', 0)}, "
+                f"sd={counts.get('service_destination_1m', 0)}, "
+                f"sum={counts.get('service_summary_1m', 0)})"
+            )
+        except Exception as exc:
+            step.status = "failed"
+            step.detail = str(exc)
+            logger.warning("APM rollup generation failed (non-fatal): %s", exc)
+        notify(self.progress)
+
+    def _build_db_pipeline_name(self) -> str:
+        return f"{self.scenario.scenario_id}-db-dependency-names"
+
+    def _deploy_db_ingest_pipeline(self, client: httpx.Client) -> None:
+        """Install an ingest pipeline that rewrites span.destination.service.resource
+        for DB CLIENT spans to use the logical DB service name instead of the
+        generic postgresql resource string."""
+        db_ops = self.scenario.db_operations
+        services = self.scenario.services
+        topology = self.scenario.service_topology
+
+        # Build service → db_service_name map from topology
+        db_services = {
+            name for name, cfg in services.items()
+            if cfg.get("subsystem") == "database"
+        }
+        svc_to_db: dict[str, str] = {}
+        for caller, calls in topology.items():
+            for callee, *_ in calls:
+                if callee in db_services:
+                    svc_to_db[caller] = callee
+
+        if not db_ops or not svc_to_db:
+            return  # Nothing to rewrite
+
+        # Build Painless conditions: for each service with DB ops, rewrite resource
+        conditions: list[str] = []
+        for svc in db_ops:
+            db_svc = svc_to_db.get(svc)
+            if not db_svc:
+                continue
+            conditions.append(
+                f"if (ctx.resource?.attributes?.['service.name'] == '{svc}') {{"
+                f" ctx.attributes['span.destination.service.resource'] = '{db_svc}'; }}"
+            )
+
+        if not conditions:
+            return
+
+        script_source = (
+            "if (ctx.attributes?.containsKey('span.destination.service.resource') != true) { return; }"
+            " String res = ctx.attributes['span.destination.service.resource'];"
+            " if (!res.startsWith('postgresql')) { return; }"
+            " " + " else ".join(conditions)
+        )
+
+        pipeline_name = self._build_db_pipeline_name()
+        pipeline_body = {
+            "description": f"Rewrite DB resource names for {self.scenario.scenario_id} APM Service Map",
+            "processors": [
+                {
+                    "script": {
+                        "lang": "painless",
+                        "source": script_source,
+                        "ignore_failure": True,
+                    }
+                }
+            ],
+        }
+        try:
+            client.put(
+                f"{self.elastic_url}/_ingest/pipeline/{pipeline_name}",
+                headers=_es_headers(self.api_key),
+                json=pipeline_body,
+            )
+            logger.info("Deployed DB ingest pipeline: %s", pipeline_name)
+        except Exception as exc:
+            logger.warning("DB ingest pipeline deploy failed (non-fatal): %s", exc)
+
+    def _set_metrics_look_back_time(self, client: httpx.Client) -> None:
+        """Set index.look_back_time: 7d on the metrics@custom component template
+        so APM rollup data is visible in the Service Map."""
+        try:
+            client.put(
+                f"{self.elastic_url}/_component_template/metrics@custom",
+                headers=_es_headers(self.api_key),
+                json={
+                    "template": {
+                        "settings": {
+                            "index": {
+                                "look_back_time": "7d",
+                            }
+                        }
+                    }
+                },
+            )
+        except Exception as exc:
+            logger.warning("metrics@custom look_back_time update failed (non-fatal): %s", exc)
+
+    # ── APM Anomaly Detection ──────────────────────────────────────────
+
+    def _deploy_apm_anomaly_detection(self, client: httpx.Client, notify: ProgressCallback):
+        """Step 13: Create APM ML anomaly detection job and start datafeed.
+
+        Modelled after the job created by the Kibana APM ML module:
+        - Single job, three detectors (latency / throughput / failure-rate)
+        - Composite aggregation (date_histogram + transaction.type + service.name)
+        - summary_count_field_name: "doc_count" (composite bucket doc_count)
+        """
+        step = self._step(13)
+        step.status = "running"
+        notify(self.progress)
+
+        try:
+            ns = self.scenario.namespace
+            env = f"production-{ns}"
+            job_id = f"apm-{ns}-transaction-metrics"
+
+            job_cfg = {
+                "job_id": job_id,
+                "description": (
+                    "Detects anomalies in transaction latency, throughput and error "
+                    f"percentage for {env}."
+                ),
+                "groups": ["apm"],
+                "custom_settings": {
+                    "created_by": "elastic-launch-demo",
+                    "job_tags": {
+                        "environment": env,
+                        "apm_ml_version": 3,
+                    },
+                },
+                "analysis_config": {
+                    "bucket_span": "15m",
+                    "summary_count_field_name": "doc_count",
+                    "detectors": [
+                        {
+                            "detector_description": "high latency by transaction type for an APM service",
+                            "function": "high_mean",
+                            "field_name": "transaction_latency",
+                            "by_field_name": "attributes.transaction.type",
+                            "partition_field_name": "resource.attributes.service.name",
+                        },
+                        {
+                            "detector_description": "transaction throughput for an APM service",
+                            "function": "mean",
+                            "field_name": "transaction_throughput",
+                            "by_field_name": "attributes.transaction.type",
+                            "partition_field_name": "resource.attributes.service.name",
+                        },
+                        {
+                            "detector_description": "failed transaction rate for an APM service",
+                            "function": "high_mean",
+                            "field_name": "failed_transaction_rate",
+                            "by_field_name": "attributes.transaction.type",
+                            "partition_field_name": "resource.attributes.service.name",
+                        },
+                    ],
+                    "influencers": [
+                        "attributes.transaction.type",
+                        "resource.attributes.service.name",
+                    ],
+                    "model_prune_window": "30d",
+                },
+                "analysis_limits": {"model_memory_limit": "64mb"},
+                "data_description": {"time_field": "@timestamp", "time_format": "epoch_ms"},
+                "model_plot_config": {"enabled": True, "annotations_enabled": True},
+                "model_snapshot_retention_days": 10,
+                "daily_model_snapshot_retention_after_days": 1,
+                "results_index_name": "custom-apm",
+                "allow_lazy_open": True,
+            }
+
+            datafeed_cfg = {
+                "job_id": job_id,
+                "indices": ["metrics-transaction.1m.otel-default"],
+                "chunking_config": {"mode": "off"},
+                "indices_options": {
+                    "ignore_unavailable": True,
+                    "expand_wildcards": ["open"],
+                    "allow_no_indices": True,
+                },
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"term": {"attributes.metricset.name": "transaction"}},
+                            {"term": {"resource.attributes.deployment.environment": env}},
+                        ]
+                    }
+                },
+                "aggregations": {
+                    "buckets": {
+                        "composite": {
+                            "size": 5000,
+                            "sources": [
+                                {
+                                    "date": {
+                                        "date_histogram": {
+                                            "field": "@timestamp",
+                                            "fixed_interval": "60s",
+                                        }
+                                    }
+                                },
+                                {
+                                    "attributes.transaction.type": {
+                                        "terms": {"field": "attributes.transaction.type"}
+                                    }
+                                },
+                                {
+                                    "resource.attributes.service.name": {
+                                        "terms": {"field": "resource.attributes.service.name"}
+                                    }
+                                },
+                            ],
+                        },
+                        "aggs": {
+                            "@timestamp": {"max": {"field": "@timestamp"}},
+                            "transaction_throughput": {"rate": {"unit": "minute"}},
+                            "transaction_latency": {
+                                "avg": {"field": "metrics.transaction.duration.histogram"}
+                            },
+                            "error_count": {
+                                "filter": {"term": {"attributes.event.outcome": "failure"}},
+                                "aggs": {
+                                    "actual_error_count": {
+                                        "value_count": {"field": "attributes.event.outcome"}
+                                    }
+                                },
+                            },
+                            "success_count": {
+                                "filter": {"term": {"attributes.event.outcome": "success"}}
+                            },
+                            "failed_transaction_rate": {
+                                "bucket_script": {
+                                    "buckets_path": {
+                                        "failure_count": "error_count>_count",
+                                        "success_count": "success_count>_count",
+                                    },
+                                    "script": (
+                                        "if ((params.failure_count + params.success_count)==0)"
+                                        "{return 0;}else{return 100 * (params.failure_count/"
+                                        "(params.failure_count + params.success_count));}"
+                                    ),
+                                }
+                            },
+                        },
+                    }
+                },
+                "scroll_size": 1000,
+                "delayed_data_check_config": {"enabled": True},
+            }
+
+            # Delete existing job+datafeed so we can recreate cleanly
+            client.post(
+                f"{self.elastic_url}/_ml/datafeeds/datafeed-{job_id}/_stop",
+                headers=_es_headers(self.api_key),
+            )
+            client.delete(
+                f"{self.elastic_url}/_ml/datafeeds/datafeed-{job_id}",
+                headers=_es_headers(self.api_key),
+            )
+            client.post(
+                f"{self.elastic_url}/_ml/anomaly_detectors/{job_id}/_close",
+                headers=_es_headers(self.api_key),
+                json={"force": True},
+            )
+            client.delete(
+                f"{self.elastic_url}/_ml/anomaly_detectors/{job_id}",
+                headers=_es_headers(self.api_key),
+            )
+
+            # Create job
+            resp = client.put(
+                f"{self.elastic_url}/_ml/anomaly_detectors/{job_id}",
+                headers=_es_headers(self.api_key),
+                json=job_cfg,
+            )
+            if resp.status_code >= 300:
+                raise RuntimeError(f"ML job create failed: {resp.text}")
+
+            # Create datafeed
+            resp = client.put(
+                f"{self.elastic_url}/_ml/datafeeds/datafeed-{job_id}",
+                headers=_es_headers(self.api_key),
+                json=datafeed_cfg,
+            )
+            if resp.status_code >= 300:
+                raise RuntimeError(f"ML datafeed create failed: {resp.text}")
+
+            # Open job
+            resp = client.post(
+                f"{self.elastic_url}/_ml/anomaly_detectors/{job_id}/_open",
+                headers=_es_headers(self.api_key),
+            )
+            if resp.status_code >= 300:
+                raise RuntimeError(f"ML job open failed: {resp.text}")
+
+            # Start datafeed from rollup start so historical data trains the model
+            start_body: dict[str, Any] = {}
+            rollup_start = self._get_apm_rollup_start(client)
+            if rollup_start:
+                start_body["start"] = rollup_start
+            resp = client.post(
+                f"{self.elastic_url}/_ml/datafeeds/datafeed-{job_id}/_start",
+                headers=_es_headers(self.api_key),
+                json=start_body,
+            )
+            if resp.status_code >= 300:
+                raise RuntimeError(f"ML datafeed start failed: {resp.text}")
+
+            step.status = "ok"
+            step.detail = f"Started ML job: {job_id}"
+        except Exception as exc:
+            step.status = "failed"
+            step.detail = str(exc)
+            logger.warning("APM anomaly detection setup failed (non-fatal): %s", exc)
+        notify(self.progress)
+
+    def _get_apm_rollup_start(self, client: httpx.Client) -> str | None:
+        """Query the earliest @timestamp in the transaction rollup index."""
+        try:
+            resp = client.post(
+                f"{self.elastic_url}/metrics-transaction.1m.otel-default/_search",
+                headers=_es_headers(self.api_key),
+                json={
+                    "size": 0,
+                    "aggs": {
+                        "min_ts": {"min": {"field": "@timestamp"}}
+                    },
+                },
+            )
+            if resp.status_code < 300:
+                val = resp.json().get("aggregations", {}).get("min_ts", {}).get("value_as_string")
+                if val:
+                    return val
+        except Exception:
+            pass
+        return None
+
     # ── Workflows ──────────────────────────────────────────────────────
 
     def _deploy_workflows(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(4)
+        step = self._step(5)
         step.status = "running"
         notify(self.progress)
 
@@ -896,7 +1333,7 @@ steps:
     # ── Tools ──────────────────────────────────────────────────────────
 
     def _deploy_tools(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(6)
+        step = self._step(7)
         step.status = "running"
         notify(self.progress)
 
@@ -954,7 +1391,7 @@ steps:
     # ── Agent ──────────────────────────────────────────────────────────
 
     def _deploy_agent(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(7)
+        step = self._step(8)
         step.status = "running"
         notify(self.progress)
 
@@ -1081,7 +1518,7 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
     # ── Knowledge Base ─────────────────────────────────────────────────
 
     def _deploy_knowledge_base(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(5)
+        step = self._step(6)
         step.status = "running"
         notify(self.progress)
 
@@ -1200,7 +1637,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
     # ── Significant Events ─────────────────────────────────────────────
 
     def _deploy_significant_events(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(8)
+        step = self._step(9)
         step.status = "running"
         notify(self.progress)
 
@@ -1244,7 +1681,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
     # ── Data Views ─────────────────────────────────────────────────────
 
     def _deploy_data_views(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(9)
+        step = self._step(10)
         step.status = "running"
         notify(self.progress)
 
@@ -1316,7 +1753,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
     # ── Dashboard ──────────────────────────────────────────────────────
 
     def _deploy_dashboard(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(10)
+        step = self._step(11)
         step.status = "running"
         notify(self.progress)
 
@@ -1355,7 +1792,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
     # ── Alerting ───────────────────────────────────────────────────────
 
     def _deploy_alerting(self, client: httpx.Client, notify: ProgressCallback):
-        step = self._step(11)
+        step = self._step(12)
         step.status = "running"
         notify(self.progress)
 
@@ -1647,6 +2084,7 @@ When the user asks you to fix or remediate this issue, use remediation_action to
         # recreates these automatically once generators start sending data.
         for ds_pattern in [
             "metrics-*.otel-*",
+            "traces-*.otel-*",
         ]:
             try:
                 resp = client.get(
@@ -1668,8 +2106,56 @@ When the user asks you to fix or remediate this issue, use remediation_action to
             except Exception as exc:
                 logger.warning("Data stream cleanup error (non-fatal): %s", exc)
 
+        # Delete APM ML jobs for all namespaces
+        for ns in all_namespaces:
+            try:
+                self._cleanup_apm_ml(client, ns)
+            except Exception:
+                pass
+
         logger.info("Cleaned up %d artifacts across all scenarios", deleted)
         return deleted
+
+    def _cleanup_apm_ml(self, client: httpx.Client, namespace: str | None = None) -> None:
+        """Delete APM ML jobs and datafeeds for the given namespace (or self.ns)."""
+        ns = namespace or self.ns
+        job_ids = [
+            f"apm-{ns}-transaction-metrics",
+            # Legacy job IDs — cleaned up in case of leftover state from prior deploys
+            f"apm-{ns}-latency",
+            f"apm-{ns}-throughput",
+            f"apm-{ns}-failure-rate",
+        ]
+        for job_id in job_ids:
+            try:
+                client.post(
+                    f"{self.elastic_url}/_ml/datafeeds/datafeed-{job_id}/_stop",
+                    headers=_es_headers(self.api_key),
+                )
+                client.delete(
+                    f"{self.elastic_url}/_ml/datafeeds/datafeed-{job_id}",
+                    headers=_es_headers(self.api_key),
+                )
+                client.post(
+                    f"{self.elastic_url}/_ml/anomaly_detectors/{job_id}/_close",
+                    headers=_es_headers(self.api_key),
+                    json={"force": True},
+                )
+                client.delete(
+                    f"{self.elastic_url}/_ml/anomaly_detectors/{job_id}",
+                    headers=_es_headers(self.api_key),
+                )
+            except Exception:
+                pass
+        # Also delete DB ingest pipeline
+        try:
+            pipeline_name = f"{self.scenario.scenario_id}-db-dependency-names"
+            client.delete(
+                f"{self.elastic_url}/_ingest/pipeline/{pipeline_name}",
+                headers=_es_headers(self.api_key),
+            )
+        except Exception:
+            pass
 
     @classmethod
     def cleanup_all(cls, elastic_url: str, kibana_url: str, api_key: str) -> dict[str, Any]:

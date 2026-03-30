@@ -427,6 +427,12 @@ def run(
     error_resource = _build_resource_dynamic("nginx.error")
     trace_resource = _build_resource_dynamic("generic", "traces")
 
+    # Only emit traces if nginx-proxy is in the scenario's services (avoids
+    # disconnected Service Map nodes when the scenario doesn't include it).
+    _emit_traces = True
+    if scenario_data and "services" in scenario_data:
+        _emit_traces = "nginx-proxy" in scenario_data["services"]
+
     total_sent = 0
     total_spans = 0
     error_spike_active = False
@@ -454,8 +460,8 @@ def run(
                 spans.append(span)
         client.send_logs(access_resource, access_records)
 
-        # Send correlated trace spans
-        if spans:
+        # Send correlated trace spans (only if nginx-proxy is in scenario topology)
+        if spans and _emit_traces:
             client.send_traces(trace_resource, spans)
             total_spans += len(spans)
 
