@@ -15,6 +15,11 @@ from app.services.base_service import BaseService
 class SensorValidatorService(BaseService):
     SERVICE_NAME = "sensor-validator"
 
+    def __init__(self, chaos_controller, otlp_client):
+        super().__init__(chaos_controller, otlp_client)
+        self._validation_count = 0
+        self._last_pipeline_report = time.time()
+
     VALIDATION_SENSORS = [
         "thermal",
         "pressure",
@@ -68,22 +73,39 @@ class SensorValidatorService(BaseService):
             )
 
         # ── Metrics ────────────────────────────────────────────
+        self._validation_count += len(sensors_to_validate)
         validations_per_sec = round(random.uniform(45.0, 65.0), 1)
         queue_depth = random.randint(0, 20)
         self.emit_metric(
             "sensor_validator.validations_per_sec", validations_per_sec, "validations/s"
         )
         self.emit_metric("sensor_validator.queue_depth", float(queue_depth), "items")
-
-        self.emit_log(
-            "INFO",
-            f"[VV] pipeline_status rate={validations_per_sec}/s queue_depth={queue_depth} status=NOMINAL",
-            {
-                "operation": "pipeline_health",
-                "validation.rate": validations_per_sec,
-                "validation.queue_depth": queue_depth,
-            },
+        self.emit_metric(
+            "sensor_validator.total_validations", float(self._validation_count), "validations"
         )
+
+        if time.time() - self._last_pipeline_report > 10:
+            self.emit_log(
+                "INFO",
+                f"[VV] pipeline_status rate={validations_per_sec}/s queue_depth={queue_depth} total={self._validation_count} status=NOMINAL",
+                {
+                    "operation": "pipeline_health",
+                    "validation.rate": validations_per_sec,
+                    "validation.queue_depth": queue_depth,
+                    "validation.total_count": self._validation_count,
+                },
+            )
+            self._last_pipeline_report = time.time()
+        else:
+            self.emit_log(
+                "INFO",
+                f"[VV] pipeline_status rate={validations_per_sec}/s queue_depth={queue_depth} status=NOMINAL",
+                {
+                    "operation": "pipeline_health",
+                    "validation.rate": validations_per_sec,
+                    "validation.queue_depth": queue_depth,
+                },
+            )
 
     def _emit_validation_failure(self, channel: int) -> None:
         """Emit additional validation-specific failure logs when a channel is active."""

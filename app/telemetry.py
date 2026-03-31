@@ -290,6 +290,7 @@ class OTLPClient:
         duration_ms: int = 50,
         attributes: dict[str, Any] | None = None,
         status_code: int = 1,
+        events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         start = _now_ns()
         end = str(int(start) + duration_ms * 1_000_000)
@@ -306,7 +307,28 @@ class OTLPClient:
             span["parentSpanId"] = parent_span_id
         if attributes:
             span["attributes"] = _format_attributes(attributes)
+        if events:
+            span["events"] = events
         return span
+
+    @staticmethod
+    def build_exception_event(
+        exception_type: str,
+        message: str,
+        stacktrace: str | None = None,
+    ) -> dict[str, Any]:
+        """Build an OTel span event for an exception (powers Kibana APM Errors)."""
+        attrs = {
+            "exception.type": exception_type,
+            "exception.message": message,
+        }
+        if stacktrace:
+            attrs["exception.stacktrace"] = stacktrace
+        return {
+            "timeUnixNano": _now_ns(),
+            "name": "exception",
+            "attributes": _format_attributes(attrs),
+        }
 
     # ── Internal ───────────────────────────────────────────────────────
     def _patch_resource_data_stream(

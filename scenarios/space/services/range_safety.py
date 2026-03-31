@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import random
+import time
 
 from app.services.base_service import BaseService
 
 
 class RangeSafetyService(BaseService):
     SERVICE_NAME = "range-safety"
+
+    def __init__(self, chaos_controller, otlp_client):
+        super().__init__(chaos_controller, otlp_client)
+        self._check_seq = 0
+        self._last_rso_report = time.time()
 
     SAFETY_CHECKS = [
         {"name": "flight_termination_system", "description": "FTS self-test"},
@@ -34,6 +40,7 @@ class RangeSafetyService(BaseService):
             self.emit_cascade_logs(ch)
 
         # ── Safety checks ──────────────────────────────────────
+        self._check_seq += 1
         checks_to_run = random.sample(
             self.SAFETY_CHECKS, k=min(4, len(self.SAFETY_CHECKS))
         )
@@ -41,9 +48,10 @@ class RangeSafetyService(BaseService):
             margin = round(random.uniform(15.0, 95.0), 1)
             self.emit_log(
                 "INFO",
-                f"[RSO] check={check['name']} margin={margin}% result=PASS status=NOMINAL",
+                f"[RSO] seq={self._check_seq} check={check['name']} margin={margin}% result=PASS status=NOMINAL",
                 {
                     "safety.check": check["name"],
+                    "safety.check_seq": self._check_seq,
                     "safety.status": "PASS",
                     "safety.margin_pct": margin,
                     "safety.description": check["description"],
@@ -51,6 +59,7 @@ class RangeSafetyService(BaseService):
                 },
             )
             self.emit_metric(f"range_safety.{check['name']}_margin", margin, "%")
+        self.emit_metric("range_safety.check_seq", float(self._check_seq), "checks")
 
         # ── Tracking status ────────────────────────────────────
         track_quality = round(random.uniform(0.92, 1.0), 4)

@@ -97,10 +97,7 @@ async def lifespan(app: FastAPI):
         kibana_url = KIBANA_URL.strip().rstrip("/")
         api_key = ELASTIC_API_KEY.strip()
 
-        # Derive ES URL from Kibana URL unless explicitly provided
-        elastic_url = ELASTIC_URL.strip().rstrip("/") if ELASTIC_URL else ""
-        if not elastic_url and ".kb." in kibana_url:
-            elastic_url = kibana_url.replace(".kb.", ".es.")
+        elastic_url = _derive_elastic_url(kibana_url, api_key, explicit=ELASTIC_URL)
 
         # Pre-compute an OTLP URL from the ES URL as a last-resort fallback.
         # The deployer probes the endpoint to verify it; if that probe fails the
@@ -275,6 +272,48 @@ def _get_default_creds() -> tuple[str, str, str]:
         r = recs[0]
         return r["elastic_url"], r["kibana_url"], r["elastic_api_key"]
     return "", "", ""
+
+
+def _derive_elastic_url(kibana_url: str, api_key: str, explicit: str = "") -> str:
+    """Derive Elasticsearch URL using three strategies in priority order:
+    1. Explicit value (env var or user-supplied)
+    2. Fleet outputs API (GET /api/fleet/outputs → default output hosts[0])
+    3. .kb. → .es. substitution in the Kibana URL
+    """
+    if explicit:
+        return explicit.strip().rstrip("/")
+
+    # Strategy 2: Fleet outputs API
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0, verify=True) as client:
+            resp = client.get(
+                f"{kibana_url}/api/fleet/outputs",
+                headers={
+                    "Authorization": f"ApiKey {api_key}",
+                    "kbn-xsrf": "true",
+                },
+            )
+            if resp.status_code == 200:
+                items = resp.json().get("items", [])
+                for item in items:
+                    if item.get("name") == "default":
+                        hosts = item.get("hosts", [])
+                        if hosts:
+                            logger.info("Derived ES URL via Fleet API: %s", hosts[0])
+                            return hosts[0].rstrip("/")
+                logger.warning("Fleet API returned 200 but no default output found: %s", resp.json())
+            else:
+                logger.warning("Fleet API returned HTTP %d: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.warning("Fleet API ES URL derivation failed: %s", exc)
+
+    # Strategy 3: .kb. → .es. substitution
+    if ".kb." in kibana_url:
+        return kibana_url.replace(".kb.", ".es.")
+
+    logger.warning("Could not derive ES URL from kibana_url=%r (no .kb. and Fleet API failed)", kibana_url)
+    return ""
 
 
 # ── Scenario Selector (new front page) ───────────────────────────────────────
@@ -749,49 +788,63 @@ async def send_daily_update(body: dict):
 
 @app.post("/api/setup/test-connection")
 async def test_connection(body: dict):
-    """Test connectivity to an Elastic environment."""
+    """Test connectivity to each component independently."""
     from scenarios import get_scenario as _get_scenario_by_id
     from elastic_config.deployer import ScenarioDeployer
+    from elastic_config.deployer_base import _kibana_headers, _es_headers
+    import httpx
 
     kibana_url = body.get("kibana_url", "").strip().rstrip("/")
     api_key = body.get("api_key", "").strip()
 
     if not kibana_url or not api_key:
-        return {"ok": False, "error": "Missing kibana_url or api_key"}
+        return {"error": "Missing kibana_url or api_key"}
 
-    # Derive ES URL from Kibana URL unless explicitly provided
-    elastic_url = (body.get("elastic_url") or "").strip().rstrip("/")
-    if not elastic_url and ".kb." in kibana_url:
-        elastic_url = kibana_url.replace(".kb.", ".es.")
+    result = {}
 
-    if not elastic_url:
-        return {
-            "ok": False,
-            "error": "Cannot derive Elasticsearch URL — provide it in Advanced settings",
-        }
+    with httpx.Client(timeout=15.0, verify=True) as client:
+        # Test Kibana — use an auth-required endpoint so a bad API key fails
+        try:
+            resp = client.get(f"{kibana_url}/api/spaces/space", headers=_kibana_headers(api_key))
+            result["kibana_ok"] = resp.status_code < 300
+            result["kibana_error"] = None if result["kibana_ok"] else f"HTTP {resp.status_code}"
+        except Exception as exc:
+            result["kibana_ok"] = False
+            result["kibana_error"] = str(exc)
 
-    # Derive OTLP endpoint
-    otlp_url = body.get("otlp_url") or ""
-    if not otlp_url and ".kb." in kibana_url:
-        otlp_url = kibana_url.replace(".kb.", ".ingest.").rstrip("/")
-        if not otlp_url.endswith(":443"):
-            otlp_url += ":443"
+        # Derive ES URL and test
+        elastic_url = _derive_elastic_url(kibana_url, api_key, explicit=body.get("elastic_url") or "")
+        result["elastic_url"] = elastic_url or None
 
-    scenario_id = body.get("scenario_id", ACTIVE_SCENARIO)
-    scenario = _get_scenario_by_id(scenario_id)
-    deployer = ScenarioDeployer(scenario, elastic_url, kibana_url, api_key)
-    result = deployer.check_connection()
+        if elastic_url:
+            try:
+                resp = client.get(f"{elastic_url}/", headers=_es_headers(api_key))
+                if resp.status_code < 300:
+                    result["es_ok"] = True
+                    result["es_error"] = None
+                    result["cluster_name"] = resp.json().get("cluster_name", "unknown")
+                else:
+                    result["es_ok"] = False
+                    result["es_error"] = f"HTTP {resp.status_code}"
+            except Exception as exc:
+                result["es_ok"] = False
+                result["es_error"] = str(exc)
 
-    # Also verify OTLP if we have an endpoint
-    if result.get("ok") and otlp_url:
-        otlp_ok = deployer.verify_otlp(otlp_url)
-        result["otlp_endpoint"] = otlp_url if otlp_ok else None
-        result["otlp_ok"] = otlp_ok
-    else:
-        result["otlp_endpoint"] = None
-        result["otlp_ok"] = False
+            # Derive and test OTLP
+            scenario_id = body.get("scenario_id", ACTIVE_SCENARIO)
+            scenario = _get_scenario_by_id(scenario_id)
+            deployer = ScenarioDeployer(scenario, elastic_url, kibana_url, api_key)
+            explicit_otlp = body.get("otlp_url") or ""
+            if explicit_otlp:
+                otlp_ok = deployer._verify_otlp_candidate(client, explicit_otlp)
+                otlp_url = explicit_otlp if otlp_ok else ""
+            else:
+                otlp_url = deployer._derive_otlp_endpoint(client) or ""
+                otlp_ok = bool(otlp_url)
+            result["otlp_ok"] = otlp_ok
+            result["otlp_error"] = None if otlp_ok else "Endpoint unreachable"
+            result["otlp_endpoint"] = otlp_url or None
 
-    result["elastic_url"] = elastic_url
     return result
 
 
@@ -815,12 +868,7 @@ async def launch_setup(body: dict):
     kibana_url = body.get("kibana_url", _def_kibana).strip().rstrip("/")
     api_key = body.get("api_key", _def_key).strip()
 
-    # Derive ES URL from Kibana URL unless explicitly provided
-    elastic_url = (body.get("elastic_url") or "").strip().rstrip("/")
-    if not elastic_url and ".kb." in kibana_url:
-        elastic_url = kibana_url.replace(".kb.", ".es.")
-    if not elastic_url:
-        elastic_url = _def_elastic
+    elastic_url = _derive_elastic_url(kibana_url, api_key, explicit=body.get("elastic_url") or "") or _def_elastic
 
     if not kibana_url or not api_key:
         return JSONResponse(

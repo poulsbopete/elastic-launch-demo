@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import random
+import time
 
 from app.services.base_service import BaseService
 
 
 class GroundSystemsService(BaseService):
     SERVICE_NAME = "ground-systems"
+
+    def __init__(self, chaos_controller, otlp_client):
+        super().__init__(chaos_controller, otlp_client)
+        self._weather_cycle = 0
+        self._last_gse_summary = time.time()
 
     WEATHER_PARAMS = [
         ("wind_speed", "knots", 2.0, 12.0),
@@ -41,6 +47,7 @@ class GroundSystemsService(BaseService):
             self.emit_cascade_logs(ch)
 
         # ── Weather monitoring ─────────────────────────────────
+        self._weather_cycle += 1
         self._emit_weather_readings()
 
         # ── Pad status ─────────────────────────────────────────
@@ -56,11 +63,13 @@ class GroundSystemsService(BaseService):
 
         wind = round(random.uniform(2.0, 12.0), 1)
         vis = round(random.uniform(8.0, 15.0), 1)
+        self.emit_metric("ground.weather_cycle", float(self._weather_cycle), "cycles")
         self.emit_log(
             "INFO",
-            f"[GND] weather_check wind={wind}kts visibility={vis}km ceiling=12000ft constraint=WITHIN status=GO",
+            f"[GND] weather_check cycle={self._weather_cycle} wind={wind}kts visibility={vis}km ceiling=12000ft constraint=WITHIN status=GO",
             {
                 "operation": "weather_check",
+                "weather.cycle": self._weather_cycle,
                 "weather.wind_speed_knots": wind,
                 "weather.visibility_km": vis,
                 "weather.status": "GO",

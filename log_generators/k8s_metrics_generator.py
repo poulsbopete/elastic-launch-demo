@@ -552,6 +552,13 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
             _service_cloud[svc_name] = svc_cfg.get("cloud_provider", "")
         _channel_registry = scenario_data.get("channel_registry", {})
 
+    # Filter out database services — they're managed instances, not K8s deployments
+    if scenario_data:
+        db_services = {name for name, cfg in scenario_data.get("services", {}).items()
+                       if cfg.get("subsystem") == "database"}
+        for c in clusters:
+            c["services"] = [s for s in c["services"] if s not in db_services]
+
     # Collect all service names across clusters for state tracking
     all_services = []
     for c in clusters:

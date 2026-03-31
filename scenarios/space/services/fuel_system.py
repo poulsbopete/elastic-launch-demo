@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import random
+import time
 
 from app.services.base_service import BaseService
 
 
 class FuelSystemService(BaseService):
     SERVICE_NAME = "fuel-system"
+
+    def __init__(self, chaos_controller, otlp_client):
+        super().__init__(chaos_controller, otlp_client)
+        self._check_count = 0
+        self._last_press_summary = time.time()
 
     # Nominal sensor ranges
     SENSORS = {
@@ -97,12 +103,28 @@ class FuelSystemService(BaseService):
             )
 
         # Propulsion summary
-        self.emit_log(
-            "INFO",
-            f"[PMS] system_check sensors={len(self.SENSORS)} failures=0 result=PASS status=NOMINAL",
-            {
-                "operation": "system_check",
-                "check.result": "PASS",
-                "check.sensor_count": len(self.SENSORS),
-            },
-        )
+        self._check_count += 1
+        self.emit_metric("fuel_system.check_count", float(self._check_count), "checks")
+
+        if time.time() - self._last_press_summary > 10:
+            self.emit_log(
+                "INFO",
+                f"[PMS] system_check sensors={len(self.SENSORS)} failures=0 checks={self._check_count} result=PASS status=NOMINAL",
+                {
+                    "operation": "system_check",
+                    "check.result": "PASS",
+                    "check.sensor_count": len(self.SENSORS),
+                    "check.total_count": self._check_count,
+                },
+            )
+            self._last_press_summary = time.time()
+        else:
+            self.emit_log(
+                "INFO",
+                f"[PMS] system_check sensors={len(self.SENSORS)} failures=0 result=PASS status=NOMINAL",
+                {
+                    "operation": "system_check",
+                    "check.result": "PASS",
+                    "check.sensor_count": len(self.SENSORS),
+                },
+            )

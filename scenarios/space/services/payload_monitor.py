@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import random
+import time
 
 from app.services.base_service import BaseService
 
 
 class PayloadMonitorService(BaseService):
     SERVICE_NAME = "payload-monitor"
+
+    def __init__(self, chaos_controller, otlp_client):
+        super().__init__(chaos_controller, otlp_client)
+        self._scan_count = 0
+        self._last_health_report = time.time()
 
     PAYLOAD_SENSORS = {
         "bay_temperature": {
@@ -80,12 +86,28 @@ class PayloadMonitorService(BaseService):
             )
 
         # ── Payload health summary ─────────────────────────────
-        self.emit_log(
-            "INFO",
-            f"[PLD] health_check sensors={len(self.PAYLOAD_SENSORS)} failures=0 satellite=READY status=NOMINAL",
-            {
-                "operation": "payload_health",
-                "payload.status": "NOMINAL",
-                "payload.sensor_count": len(self.PAYLOAD_SENSORS),
-            },
-        )
+        self._scan_count += 1
+        self.emit_metric("payload.scan_count", float(self._scan_count), "scans")
+
+        if time.time() - self._last_health_report > 10:
+            self.emit_log(
+                "INFO",
+                f"[PLD] health_check scan={self._scan_count} sensors={len(self.PAYLOAD_SENSORS)} failures=0 satellite=READY status=NOMINAL",
+                {
+                    "operation": "payload_health",
+                    "payload.status": "NOMINAL",
+                    "payload.sensor_count": len(self.PAYLOAD_SENSORS),
+                    "payload.scan_count": self._scan_count,
+                },
+            )
+            self._last_health_report = time.time()
+        else:
+            self.emit_log(
+                "INFO",
+                f"[PLD] health_check sensors={len(self.PAYLOAD_SENSORS)} failures=0 satellite=READY status=NOMINAL",
+                {
+                    "operation": "payload_health",
+                    "payload.status": "NOMINAL",
+                    "payload.sensor_count": len(self.PAYLOAD_SENSORS),
+                },
+            )

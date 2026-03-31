@@ -354,6 +354,15 @@
         .status-msg.err { color: var(--red); }
         .status-msg.info { color: var(--amber); }
 
+        /* Connection check indicators */
+        .conn-check {
+            font-size: 11px;
+            font-weight: 700;
+            margin-left: 6px;
+        }
+        .conn-check.conn-ok  { color: var(--green); }
+        .conn-check.conn-fail { color: var(--red); }
+
         /* Progress Panel */
         .progress-panel {
             padding: 0 40px 40px;
@@ -452,24 +461,24 @@
             <h2>Connection Settings</h2>
             <div class="form-grid">
                 <div class="form-group">
-                    <label>Kibana URL</label>
-                    <input type="url" id="kibana-url" placeholder="https://my-cluster.kb.us-east-1.aws.elastic.cloud" oninput="deriveUrls()">
+                    <label>Kibana URL <span class="conn-check" id="check-kibana"></span></label>
+                    <input type="url" id="kibana-url" placeholder="https://my-cluster.kb.us-east-1.aws.elastic.cloud" oninput="deriveUrls(); clearConnChecks()">
                 </div>
                 <div class="form-group">
                     <label>API Key</label>
-                    <input type="password" id="api-key" placeholder="Base64-encoded API key">
+                    <input type="password" id="api-key" placeholder="Base64-encoded API key" oninput="clearConnChecks()">
                 </div>
             </div>
             <details class="advanced-settings">
                 <summary>Advanced (auto-derived from Kibana URL)</summary>
                 <div class="form-grid" style="margin-top: 12px;">
                     <div class="form-group">
-                        <label>Elasticsearch URL</label>
-                        <input type="url" id="es-url" placeholder="Auto-derived from Kibana URL">
+                        <label>Elasticsearch URL <span class="conn-check" id="check-es"></span></label>
+                        <input type="url" id="es-url" placeholder="Auto-derived from Kibana URL" oninput="clearConnChecks()">
                     </div>
                     <div class="form-group">
-                        <label>OTLP Endpoint</label>
-                        <input type="url" id="otlp-url" placeholder="Auto-derived from Kibana URL">
+                        <label>OTLP Endpoint <span class="conn-check" id="check-otlp"></span></label>
+                        <input type="url" id="otlp-url" placeholder="Auto-derived from Kibana URL" oninput="clearConnChecks()">
                     </div>
                 </div>
             </details>
@@ -640,6 +649,20 @@
         });
     });
 
+    function setConnCheck(id, ok) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = ok ? '✅' : '❌';
+        el.className = 'conn-check ' + (ok ? 'conn-ok' : 'conn-fail');
+    }
+
+    function clearConnChecks() {
+        ['check-kibana', 'check-es', 'check-otlp'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) { el.textContent = ''; el.className = 'conn-check'; }
+        });
+    }
+
     async function testConnection() {
         const kibanaUrl = document.getElementById('kibana-url').value.trim();
         const key = document.getElementById('api-key').value.trim();
@@ -651,6 +674,7 @@
             return;
         }
 
+        clearConnChecks();
         msg.textContent = 'Testing...';
         msg.className = 'status-msg visible info';
 
@@ -670,23 +694,32 @@
                 }),
             });
             const data = await resp.json();
-            if (data.ok) {
-                let status = 'Connected! Cluster: ' + (data.cluster_name || 'OK');
-                if (data.otlp_ok) status += ' | OTLP OK';
-                else status += ' | OTLP not verified';
-                msg.textContent = status;
-                msg.className = 'status-msg visible ok';
 
-                if (data.elastic_url && !document.getElementById('es-url').dataset.manual) {
-                    document.getElementById('es-url').value = data.elastic_url;
-                }
-                if (data.otlp_endpoint && !document.getElementById('otlp-url').dataset.manual) {
-                    document.getElementById('otlp-url').value = data.otlp_endpoint;
-                }
-            } else {
-                msg.textContent = 'Connection failed: ' + (data.error || 'Unknown error');
-                msg.className = 'status-msg visible err';
-            }
+            // Set per-component checkmarks (only for components that were tested)
+            if ('kibana_ok' in data) setConnCheck('check-kibana', data.kibana_ok);
+            if ('es_ok'     in data) setConnCheck('check-es',     data.es_ok);
+            if ('otlp_ok'   in data) setConnCheck('check-otlp',   data.otlp_ok);
+
+            // Build status line from tested components only
+            const parts = [];
+            if ('kibana_ok' in data)
+                parts.push('Kibana: '        + (data.kibana_ok ? 'OK' : (data.kibana_error || 'Failed')));
+            if ('es_ok' in data)
+                parts.push('Elasticsearch: ' + (data.es_ok     ? 'OK' : (data.es_error    || 'Failed')));
+            if ('otlp_ok' in data)
+                parts.push('OTLP: '          + (data.otlp_ok   ? 'OK' : (data.otlp_error  || 'Failed')));
+
+            const anyFail = data.kibana_ok === false || data.es_ok === false || data.otlp_ok === false;
+            msg.textContent = parts.join(' | ') || (data.error || 'Unknown error');
+            msg.className   = 'status-msg visible ' + (anyFail ? 'err' : 'ok');
+
+            // Populate derived URLs if field is empty or not manually set
+            const esField = document.getElementById('es-url');
+            if (data.elastic_url && (!esField.value || !esField.dataset.manual))
+                esField.value = data.elastic_url;
+            const otlpField = document.getElementById('otlp-url');
+            if (data.otlp_endpoint && (!otlpField.value || !otlpField.dataset.manual))
+                otlpField.value = data.otlp_endpoint;
         } catch (e) {
             msg.textContent = 'Connection test endpoint not available — you can still launch';
             msg.className = 'status-msg visible info';

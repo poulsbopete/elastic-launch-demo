@@ -1,4 +1,4 @@
-"""NOVA-7 Space Mission scenario — the original demo, now extracted into scenario format."""
+"""NOVA-7 Space Mission scenario — orbital insertion mission with rocket propulsion, guidance, communications, and range safety systems."""
 
 from __future__ import annotations
 
@@ -1138,15 +1138,15 @@ class SpaceScenario(BaseScenario):
     # ── Service Classes ───────────────────────────────────────────────
 
     def get_service_classes(self) -> list[type]:
-        from app.services.comms_array import CommsArrayService
-        from app.services.fuel_system import FuelSystemService
-        from app.services.ground_systems import GroundSystemsService
-        from app.services.mission_control import MissionControlService
-        from app.services.navigation import NavigationService
-        from app.services.payload_monitor import PayloadMonitorService
-        from app.services.range_safety import RangeSafetyService
-        from app.services.sensor_validator import SensorValidatorService
-        from app.services.telemetry_relay import TelemetryRelayService
+        from scenarios.space.services.comms_array import CommsArrayService
+        from scenarios.space.services.fuel_system import FuelSystemService
+        from scenarios.space.services.ground_systems import GroundSystemsService
+        from scenarios.space.services.mission_control import MissionControlService
+        from scenarios.space.services.navigation import NavigationService
+        from scenarios.space.services.payload_monitor import PayloadMonitorService
+        from scenarios.space.services.range_safety import RangeSafetyService
+        from scenarios.space.services.sensor_validator import SensorValidatorService
+        from scenarios.space.services.telemetry_relay import TelemetryRelayService
 
         return [
             MissionControlService,
