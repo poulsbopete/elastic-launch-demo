@@ -216,6 +216,9 @@ class ScenarioDeployer(
             # Delete SLOs
             results["slos_deleted"] = self._cleanup_slos(client)
 
+            # Delete cases created by workflows
+            results["cases_deleted"] = self._cleanup_cases(client, self.ns)
+
         return results
 
     def teardown_with_progress(self, callback: ProgressCallback | None = None) -> DeployProgress:
@@ -232,6 +235,7 @@ class ScenarioDeployer(
             DeployStep("Delete APM ML jobs"),           # 8
             DeployStep("Delete APM rollup data"),       # 9
             DeployStep("Delete SLOs"),                  # 10
+            DeployStep("Delete cases"),                 # 11
         ])
         _notify = callback or (lambda p: None)
         _notify(progress)
@@ -406,6 +410,19 @@ class ScenarioDeployer(
                     step.detail = str(exc)
                 _notify(progress)
 
+                # Step 11: Delete cases
+                step = progress.steps[11]
+                step.status = "running"
+                _notify(progress)
+                try:
+                    deleted_cases = self._cleanup_cases(client, self.ns)
+                    step.status = "ok"
+                    step.detail = f"Deleted {deleted_cases} cases"
+                except Exception as exc:
+                    step.status = "failed"
+                    step.detail = str(exc)
+                _notify(progress)
+
         except Exception as exc:
             progress.error = str(exc)
             logger.exception("Teardown failed")
@@ -413,6 +430,38 @@ class ScenarioDeployer(
         progress.finished = True
         _notify(progress)
         return progress
+
+    # ── Cases cleanup ─────────────────────────────────────────────────
+
+    def _cleanup_cases(self, client: httpx.Client, ns: str) -> int:
+        """Delete all Kibana cases tagged with the given namespace."""
+        deleted = 0
+        page = 1
+        while True:
+            resp = client.get(
+                f"{self.kibana_url}/api/cases/_find",
+                headers=_kibana_headers(self.api_key),
+                params={"tags": ns, "perPage": 100, "page": page},
+            )
+            if resp.status_code >= 300:
+                break
+            data = resp.json()
+            cases = data.get("cases", [])
+            if not cases:
+                break
+            ids = [c["id"] for c in cases if c.get("id")]
+            if ids:
+                r = client.delete(
+                    f"{self.kibana_url}/api/cases",
+                    headers=_kibana_headers(self.api_key),
+                    params=[("ids", cid) for cid in ids],
+                )
+                if r.status_code < 300:
+                    deleted += len(ids)
+            if len(cases) < 100:
+                break
+            page += 1
+        return deleted
 
     # ── Step implementations ───────────────────────────────────────────
 
@@ -646,6 +695,13 @@ class ScenarioDeployer(
         for ns in all_namespaces:
             try:
                 self._cleanup_apm_ml(client, ns)
+            except Exception:
+                pass
+
+        # Delete cases for all namespaces
+        for ns in all_namespaces:
+            try:
+                deleted += self._cleanup_cases(client, ns)
             except Exception:
                 pass
 
