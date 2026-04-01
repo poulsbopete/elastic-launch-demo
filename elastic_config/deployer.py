@@ -598,14 +598,40 @@ class ScenarioDeployer:
         step.items_total = len(workflow_yamls)
 
         for name, yaml_content in workflow_yamls.items():
-            body = json.dumps({"yaml": yaml_content})
-            resp = client.post(
-                f"{self.kibana_url}/api/workflows",
-                headers=_kibana_headers(self.api_key),
-                content=body,
-            )
-            if resp.status_code < 300:
-                # Extract workflow ID from response
+            created = False
+
+            # Attempt 1: JSON wrapper {"yaml": "..."} — works on most serverless builds
+            try:
+                body = json.dumps({"yaml": yaml_content})
+                resp = client.post(
+                    f"{self.kibana_url}/api/workflows",
+                    headers=_kibana_headers(self.api_key),
+                    content=body,
+                )
+                logger.info("Workflow %s create (JSON): HTTP %s — %s", name, resp.status_code, resp.text[:300])
+                if resp.status_code < 300:
+                    created = True
+            except Exception as exc:
+                logger.warning("Workflow %s JSON attempt exception: %s", name, exc)
+
+            # Attempt 2: Raw YAML body with application/yaml content-type
+            if not created:
+                try:
+                    yaml_headers = dict(_kibana_headers(self.api_key))
+                    yaml_headers["Content-Type"] = "application/yaml"
+                    resp2 = client.post(
+                        f"{self.kibana_url}/api/workflows",
+                        headers=yaml_headers,
+                        content=yaml_content.encode(),
+                    )
+                    logger.info("Workflow %s create (YAML): HTTP %s — %s", name, resp2.status_code, resp2.text[:300])
+                    if resp2.status_code < 300:
+                        resp = resp2
+                        created = True
+                except Exception as exc:
+                    logger.warning("Workflow %s YAML attempt exception: %s", name, exc)
+
+            if created:
                 try:
                     wf_data = resp.json()
                     wf_id = wf_data.get("id", "")
@@ -617,7 +643,7 @@ class ScenarioDeployer:
                 step.detail = f"Deployed: {name}"
             else:
                 step.detail = f"Failed: {name} (HTTP {resp.status_code})"
-                logger.warning("Workflow %s deploy failed: %s", name, resp.text[:200])
+                logger.warning("Workflow %s deploy failed after all attempts: %s", name, resp.text[:300])
             notify(self.progress)
 
         step.status = "ok" if step.items_done > 0 else "failed"
