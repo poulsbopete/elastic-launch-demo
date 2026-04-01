@@ -30,7 +30,11 @@ inputs:
     description: "Reason for executing this remediation"
   - name: dry_run
     type: boolean
-    default: false
+    default: true
+  - name: case_id
+    type: string
+    default: ""
+    description: "Direct case ID to close (skips tag search when provided — always pass this when remediating from a case context)"
 
 steps:
   - name: queue_remediation
@@ -54,6 +58,46 @@ steps:
     with:
       message: "Remediation QUEUED for channel {{ inputs.channel }}. Backend will process shortly."
 
+  # Path A: case_id provided — use it directly, no search needed
+  - name: close_provided_case
+    type: if
+    condition: "inputs.case_id : *"
+    steps:
+      - name: add_comment_to_provided_case
+        type: kibana.request
+        with:
+          method: POST
+          path: "/api/cases/{{ inputs.case_id }}/comments"
+          headers:
+            kbn-xsrf: "true"
+          body:
+            type: "user"
+            comment: |
+              ## Remediation Performed
+
+              - **Action:** {{ inputs.action_type }}
+              - **Target Service:** {{ inputs.target_service }}
+              - **Error Type:** {{ inputs.error_type }}
+              - **Channel:** {{ inputs.channel }}
+              - **Dry Run:** {{ inputs.dry_run }}
+              - **Justification:** {{ inputs.justification }}
+            owner: "observability"
+
+      - name: refetch_provided_case
+        type: kibana.request
+        with:
+          method: GET
+          path: "/api/cases/{{ inputs.case_id }}"
+
+      - name: update_provided_case_closed
+        type: kibana.updateCase
+        with:
+          cases:
+            - id: "{{ steps.refetch_provided_case.output.id }}"
+              version: "{{ steps.refetch_provided_case.output.version }}"
+              status: "closed"
+
+  # Path B: no case_id — fall back to tag-based search
   - name: find_open_case
     type: kibana.request
     with:
@@ -62,14 +106,40 @@ steps:
 
   - name: close_case
     type: if
-    condition: "steps.find_open_case.output.cases.0.id : *"
+    condition: "NOT inputs.case_id : * AND steps.find_open_case.output.cases.0.id : *"
     steps:
+      - name: add_remediation_comment
+        type: kibana.request
+        with:
+          method: POST
+          path: "/api/cases/{{ steps.find_open_case.output.cases[0].id }}/comments"
+          headers:
+            kbn-xsrf: "true"
+          body:
+            type: "user"
+            comment: |
+              ## Remediation Performed
+
+              - **Action:** {{ inputs.action_type }}
+              - **Target Service:** {{ inputs.target_service }}
+              - **Error Type:** {{ inputs.error_type }}
+              - **Channel:** {{ inputs.channel }}
+              - **Dry Run:** {{ inputs.dry_run }}
+              - **Justification:** {{ inputs.justification }}
+            owner: "observability"
+
+      - name: refetch_case
+        type: kibana.request
+        with:
+          method: GET
+          path: "/api/cases/{{ steps.find_open_case.output.cases[0].id }}"
+
       - name: update_case_closed
         type: kibana.updateCase
         with:
           cases:
-            - id: "{{ steps.find_open_case.output.cases[0].id }}"
-              version: "{{ steps.find_open_case.output.cases[0].version }}"
+            - id: "{{ steps.refetch_case.output.id }}"
+              version: "{{ steps.refetch_case.output.version }}"
               status: "closed"
 
   - name: log_case_closed
