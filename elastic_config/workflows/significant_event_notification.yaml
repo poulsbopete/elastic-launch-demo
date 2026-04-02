@@ -30,22 +30,25 @@ steps:
         your structured RCA report. Do NOT execute any remediation actions.
 
   - name: create_case
-    type: kibana.createCaseDefaultSpace
+    type: kibana.request
     with:
-      title: "__SCENARIO_NAME__ RCA: {{ event.rule.name }}"
-      description: "{{ steps.run_rca.output.message }}"
-      tags:
-        - "__NS__"
-        - "{{ event.rule.tags[1] }}"
-      severity: "high"
-      owner: "observability"
-      settings:
-        syncAlerts: false
-      connector:
-        id: "none"
-        name: "none"
-        type: ".none"
-        fields: null
+      method: POST
+      path: /api/cases
+      body:
+        title: "__SCENARIO_NAME__ RCA: {{ event.rule.name }}"
+        description: "{{ steps.run_rca.output.message }}"
+        tags:
+          - "__NS__"
+          - "{{ event.rule.tags[1] }}"
+        severity: "high"
+        owner: "observability"
+        settings:
+          syncAlerts: false
+        connector:
+          id: "none"
+          name: "none"
+          type: ".none"
+          fields: null
 
   - name: audit_log
     type: elasticsearch.index
