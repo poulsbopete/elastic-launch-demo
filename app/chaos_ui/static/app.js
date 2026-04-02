@@ -365,6 +365,7 @@
                 const remaining = Math.max(0, MAX_DURATION - elapsed);
                 const remMins = Math.floor(remaining / 60);
                 const remSecs = remaining % 60;
+                const ownerTag = myOwnedChannels.has(id) ? '<span class="ac-owned">MINE</span>' : '';
                 const resolveBtn = `<button class="ac-resolve-btn" onclick="resolveChannel(${id})">RESOLVE</button>`;
                 return `
                     <div class="active-channel-card">
