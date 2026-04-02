@@ -919,7 +919,38 @@ automatically deploys `ACTIVE_SCENARIO` on startup without requiring UI interact
 | `ACTIVE_SCENARIO` | No | Defaults to `space` |
 | `ELASTIC_URL` | No | Auto-derived from `KIBANA_URL` (`.kb.` → `.es.`) if not set |
 | `OTLP_ENDPOINT` | No | Auto-derived from ES URL if not set (see OTLP derivation above) |
+| `KIBANA_PROXY` | No | Hostname of a reverse proxy in front of Kibana; used for all user-facing links (see below) |
 | `OPERATOR_EMAIL` | No | Pre-fills the email field in the Chaos UI (fallback when `X-Forwarded-User` header is absent) |
+
+### Kibana Proxy for User-Facing Links (`KIBANA_PROXY`)
+
+When Kibana is served via a reverse proxy (e.g. an Okta-protected gateway, an ngrok tunnel,
+or a corporate load balancer), the public URL differs from the real Kibana endpoint.
+`KIBANA_PROXY` separates these two concerns:
+
+- **`KIBANA_URL`** — always the real Kibana host; used for all internal API calls (deployer, workflow engine, auth checks, etc.)
+- **`KIBANA_PROXY`** — the public-facing URL; used only where a human will click
+
+**Affected surfaces (all fall back to `KIBANA_URL` when `KIBANA_PROXY` is unset):**
+
+| Surface | Mechanism |
+| ------- | --------- |
+| Landing page links (Dashboard, Observability Overview, Agent Builder) | `KIBANA_URL_PLACEHOLDER` → `_inject_theme()` → `kibana_display` |
+| Slides page "Launch Demo" button | Same `_inject_theme()` path |
+| Notification workflow email (significant event alert) | `__KIBANA_URL__` template var in YAML |
+| AI agent system prompt (`## Mission Context`) | `self.kibana_display_url` in `_generate_system_prompt()` |
+
+**Implementation:**
+
+- `app/config.py` — `KIBANA_PROXY = os.getenv("KIBANA_PROXY", "").strip().rstrip("/")`
+- `app/main.py` — `_inject_theme()` computes `kibana_display = KIBANA_PROXY or kibana` and substitutes `KIBANA_URL_PLACEHOLDER`
+- `elastic_config/deployer.py` — `ScenarioDeployer.__init__` accepts `kibana_proxy` param, sets `self.kibana_display_url = kibana_proxy or self.kibana_url`
+- `elastic_config/deployer_workflows.py` — adds `yaml_content.replace("__KIBANA_URL__", self.kibana_display_url)` alongside other template substitutions
+- Workflow YAML template `significant_event_notification.yaml` — uses `__KIBANA_URL__` in the email body
+- `elastic_config/deployer_agent.py` — includes `self.kibana_display_url` in `**Kibana URL**` line of agent system prompt
+
+**Gotcha:** `KIBANA_PROXY` affects only user-visible links. It is never used for any HTTP request the
+app makes to Kibana. Do not set it as a replacement for `KIBANA_URL` — both must be set when using a proxy.
 
 **Progress visibility:**
 
