@@ -42,11 +42,52 @@
         updateSpikesLock();
     }
 
+    // ── Deployment status banner ──────────────────────────────
+    function updateDeploymentBanner(active) {
+        let banner = document.getElementById('deployment-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'deployment-banner';
+            banner.style.cssText = [
+                'position:fixed', 'top:0', 'left:0', 'right:0',
+                'padding:8px 20px', 'font-family:Space Mono,monospace',
+                'font-size:12px', 'letter-spacing:1px', 'text-align:center',
+                'z-index:9998', 'transition:all 0.3s',
+            ].join(';');
+            document.body.prepend(banner);
+        }
+        if (active) {
+            banner.style.display = 'none';
+        } else {
+            banner.style.display = 'block';
+            banner.style.background = 'rgba(180,0,0,0.9)';
+            banner.style.color = '#fff';
+            banner.textContent = '⚠ NO ACTIVE DEPLOYMENT — go to Demo App tab and re-launch the scenario';
+        }
+    }
+
+    function checkDeployment() {
+        fetch('/api/deployments' + qs)
+            .then(r => r.json())
+            .then(deps => {
+                const active = deps.some(d => d.running);
+                updateDeploymentBanner(active);
+                if (!active && Object.keys(channelData).length === 0) {
+                    // No deployment and no cached channels — disable inject
+                    const btn = document.getElementById('btn-inject');
+                    if (btn) btn.disabled = true;
+                }
+            })
+            .catch(() => { /* ignore network errors */ });
+    }
+
     // ── Initialize ────────────────────────────────────────────
     function init() {
         fetchChannels();
+        checkDeployment();
         validateSession();
         setInterval(fetchStatus, 2000);
+        setInterval(checkDeployment, 10000);
         // Auto-populate email from X-Forwarded-User header
         fetch('/api/user/info')
             .then(r => r.json())
@@ -96,6 +137,8 @@
             .then(r => r.json())
             .then(data => {
                 channelData = data;
+                // If status returns empty, deployment likely gone — check immediately
+                if (Object.keys(data).length === 0) checkDeployment();
                 updateActiveChannels(data);
                 if (selectedChannel && data[selectedChannel]) {
                     updateChannelInfo(selectedChannel, data[selectedChannel]);
