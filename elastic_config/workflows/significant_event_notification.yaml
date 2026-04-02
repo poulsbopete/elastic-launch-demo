@@ -1,23 +1,12 @@
 version: "1"
 name: __SCENARIO_NAME__ Significant Event Notification
 description: >
-  Notify launch operations team when a significant event is detected.
-  Triggered by alert rules — uses event.rule.tags[1] for the error_type
-  search, extracts user_email from event_name, sends email notification
-  immediately, then runs AI root cause analysis and creates a case with
-  RCA findings.
+  Triggered by alert rules. Runs AI root cause analysis and creates a case.
 
 triggers:
   - type: alert
 
 steps:
-  - name: enrich_context
-    type: elasticsearch.esql.query
-    with:
-      query: >
-        FROM logs.otel,logs.otel.* | WHERE KQL("body.text: \"{{ event.rule.tags[1] }}\" AND severity_text: \"ERROR\"") | KEEP event_name
-      format: json
-
   - name: count_errors
     type: elasticsearch.esql.query
     with:
@@ -26,31 +15,6 @@ steps:
         | WHERE @timestamp > NOW() - 15 MINUTES AND severity_text == "ERROR"
         | STATS total_errors = COUNT(*)
       format: json
-
-  - name: parse_event_meta
-    type: data.set
-    with:
-      var:
-        - event_meta: "${{ steps.enrich_context.output.values[1][0] | json_parse }}"
-
-  - name: send_notification
-    type: email
-    connector-id: Elastic-Cloud-SMTP
-    if: "${{ steps.parse_event_meta.output.var[0].event_meta.user_email != '' and steps.parse_event_meta.output.var[0].event_meta.user_email != null }}"
-    with:
-      to:
-        - "{{ steps.parse_event_meta.output.var[0].event_meta.user_email }}"
-      subject: "__SCENARIO_NAME__ Alert: {{ event.rule.name }}"
-      message: >
-        Significant event detected in __SCENARIO_NAME__ mission:
-
-        Rule: {{ event.rule.name }}
-        Error Type: {{ event.rule.tags[1] }}
-        Total errors (15m): {{ steps.count_errors.output.values[0][0] }}
-
-        An AI root cause analysis is underway — a case with detailed findings will be created shortly.
-
-        Open Kibana to investigate and request remediation.
 
   - name: run_rca
     type: ai.agent
@@ -69,15 +33,14 @@ steps:
     type: kibana.createCaseDefaultSpace
     with:
       title: "__SCENARIO_NAME__ RCA: {{ event.rule.name }}"
-      description: |
-        [View Conversation](/app/agent_builder/conversations/{{ steps.run_rca.output.conversationId }})
-
-        {{ steps.run_rca.output.message }}
+      description: "{{ steps.run_rca.output.message }}"
       tags:
         - "__NS__"
         - "{{ event.rule.tags[1] }}"
       severity: "high"
       owner: "observability"
+      settings:
+        syncAlerts: false
       connector:
         id: "none"
         name: "none"
@@ -91,7 +54,6 @@ steps:
       document:
         rule_name: "{{ event.rule.name }}"
         error_type: "{{ event.rule.tags[1] }}"
-        total_errors: "{{ steps.count_errors.output.values[0][0] }}"
         rca_case_created: true
         mission_id: "__SCENARIO_NAME__"
       refresh: wait_for
