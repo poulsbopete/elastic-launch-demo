@@ -53,6 +53,18 @@ steps:
           type: ".none"
           fields: null
 
+  - name: queue_remediation
+    type: elasticsearch.index
+    with:
+      index: "__NS__-remediation-queue"
+      document:
+        channel: "{{ inputs.channel }}"
+        error_type: "{{ event.rule.tags[1] }}"
+        dry_run: "false"
+        status: "pending"
+        triggered_by: "significant_event_notification"
+      refresh: wait_for
+
   - name: audit_log
     type: elasticsearch.index
     with:
@@ -60,6 +72,7 @@ steps:
       document:
         rule_name: "{{ event.rule.name }}"
         error_type: "{{ event.rule.tags[1] }}"
+        channel: "{{ inputs.channel }}"
         rca_case_created: true
         mission_id: "__SCENARIO_NAME__"
       refresh: wait_for
