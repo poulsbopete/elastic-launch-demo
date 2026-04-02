@@ -67,10 +67,12 @@ steps:
 
   - name: create_case
     type: kibana.createCaseDefaultSpace
-    continue-on-error: true
     with:
       title: "__SCENARIO_NAME__ RCA: {{ event.rule.name }}"
-      description: "{{ steps.run_rca.output.message | truncate(29000) }}\n\n[View Conversation](/app/agent_builder/conversations/{{ steps.run_rca.output.conversationId }})"
+      description: |
+        [View Conversation](/app/agent_builder/conversations/{{ steps.run_rca.output.conversationId }})
+
+        {{ steps.run_rca.output.message }}
       tags:
         - "__NS__"
         - "{{ event.rule.tags[1] }}"

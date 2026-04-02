@@ -120,13 +120,20 @@ class WorkflowsMixin:
         return resp
 
     def _cleanup_workflows(self, client: httpx.Client) -> int:
-        """Delete workflows matching this scenario's name."""
+        """Delete workflows matching this scenario's name, plus any untitled/nameless ones."""
         deleted = 0
         try:
             items = self._wf_search(client)
             scenario_name = self.scenario.scenario_name
             for item in items:
-                if scenario_name in item.get("name", "") or f"{self.ns}-" in item.get("name", "").lower():
+                name = item.get("name", "") or ""
+                is_scenario_wf = (
+                    scenario_name in name
+                    or f"{self.ns}-" in name.lower()
+                )
+                # Also clean up untitled/nameless workflows left by failed deploys
+                is_untitled = not name.strip() or name.lower() in ("untitled workflow", "untitled")
+                if is_scenario_wf or is_untitled:
                     wf_id = item.get("id", "")
                     if wf_id:
                         r = self._wf_delete(client, wf_id)
