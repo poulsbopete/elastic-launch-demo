@@ -34,6 +34,9 @@ steps:
     with:
       method: POST
       path: /api/cases
+      headers:
+        Content-Type: application/json
+        kbn-xsrf: "true"
       body:
         title: "__SCENARIO_NAME__ RCA: {{ event.rule.name }}"
         description: "{{ steps.run_rca.output.message }}"
