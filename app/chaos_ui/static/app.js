@@ -307,8 +307,8 @@
                 const kibanaBase = (window.KIBANA_URL || '').replace(/\/$/, '');
                 const alertsUrl = kibanaBase + `/app/observability/alerts?_a=(controlConfigs:!((display_settings:(hide_action_bar:!t),exclude:!f,exists_selected:!f,field_name:kibana.alert.status,selected_options:!(active),title:Status),(display_settings:(hide_action_bar:!f),exclude:!f,exists_selected:!f,field_name:kibana.alert.rule.name,selected_options:!(),title:Rule),(display_settings:(hide_action_bar:!f),exclude:!f,exists_selected:!f,field_name:kibana.alert.group.value,selected_options:!(),title:Group),(display_settings:(hide_action_bar:!f),exclude:!f,exists_selected:!f,field_name:tags,selected_options:!(),title:Tags)),filters:!(),groupings:!(none),kuery:%27%27,rangeFrom:now-2m,rangeTo:now)`;
                 const casesUrl = kibanaBase + `/app/observability/cases?cases=(from:now-30d,page:1,perPage:10,sortField:createdAt,sortOrder:desc,to:now)`;
-                const kibanaLinks = `<a class="ac-kibana-btn" href="${alertsUrl}" target="_blank" rel="noopener">ALERTS</a>` +
-                    `<a class="ac-kibana-btn" href="${casesUrl}" target="_blank" rel="noopener">CASES</a>`;
+                const kibanaLinks = `<a class="ac-kibana-btn ac-btn-alerts" href="${alertsUrl}" target="_blank" rel="noopener">ALERTS</a>` +
+                    `<a class="ac-kibana-btn ac-btn-cases" href="${casesUrl}" target="_blank" rel="noopener">CASES</a>`;
                 return `
                     <div class="active-channel-card">
                         <div class="ac-header">
