@@ -46,6 +46,13 @@ registry = InstanceRegistry()
 store = DeploymentStore()
 chaos_store = ChaosStore()
 
+
+def _purge_deployment_records(deployment_id: str) -> None:
+    """Drop deployment row and any persisted chaos channels for this id."""
+    store.delete(deployment_id)
+    chaos_store.delete_channels_for_deployment(deployment_id)
+
+
 # In-memory progress trackers keyed by deployment_id
 _deploy_progress: dict[str, dict] = {}
 _teardown_progress: dict[str, dict] = {}
@@ -508,7 +515,7 @@ async def remove_deployment(deployment_id: str):
     inst = registry.remove(deployment_id)
     if inst:
         inst.stop()
-    store.delete(deployment_id)
+    _purge_deployment_records(deployment_id)
     return {"status": "removed", "deployment_id": deployment_id}
 
 
@@ -1098,7 +1105,7 @@ async def stop_and_teardown(body: dict = {}):
 
                 def _run_teardown():
                     deployer.teardown_with_progress(callback=_progress_cb)
-                    store.delete(deployment_id)
+                    _purge_deployment_records(deployment_id)
 
                 _teardown_progress[deployment_id] = {
                     "finished": False,
@@ -1110,7 +1117,7 @@ async def stop_and_teardown(body: dict = {}):
 
                 return {"status": "stopping", "deployment_id": deployment_id}
 
-        store.delete(deployment_id)
+        _purge_deployment_records(deployment_id)
         # No credentials — mark as instantly done
         _teardown_progress[deployment_id] = {"finished": True, "error": "", "steps": []}
         return {"status": "stopping", "deployment_id": deployment_id}
@@ -1134,7 +1141,7 @@ async def stop_and_teardown(body: dict = {}):
 
         # Clear all deployment records from store
         for rec in store.get_all_active():
-            store.delete(rec["deployment_id"])
+            _purge_deployment_records(rec["deployment_id"])
 
         return {
             "ok": result.get("ok", False),

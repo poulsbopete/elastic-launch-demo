@@ -199,6 +199,13 @@ class BaseScenario(ABC):
         """
         ...
 
+    def prefixed_tool_id(self, base_id: str) -> str:
+        """Stable per-scenario tool id so multiple scenarios can coexist in Agent Builder."""
+        p = f"{self.namespace}_"
+        if base_id.startswith(p):
+            return base_id
+        return f"{p}{base_id}"
+
     @property
     def tool_definitions(self) -> list[dict[str, Any]]:
         """Agent Builder tool configurations — auto-generated from scenario properties.
@@ -317,7 +324,7 @@ class BaseScenario(ABC):
 
         tools = [
             {
-                "id": "search_error_logs",
+                "id": self.prefixed_tool_id("search_error_logs"),
                 "type": "esql",
                 "description": (
                     f"Search telemetry logs for a specific error or exception type. "
@@ -336,14 +343,14 @@ class BaseScenario(ABC):
                     "params": {
                         "error_type": {
                             "description": f"Wildcard pattern for the error type, e.g. *{example_error}*",
-                            "type": "string",
+                            "type": "text",
                             "optional": False,
                         }
                     },
                 },
             },
             {
-                "id": "search_subsystem_health",
+                "id": self.prefixed_tool_id("search_subsystem_health"),
                 "type": "esql",
                 "description": (
                     f"Query health status by aggregating recent telemetry. "
@@ -364,7 +371,7 @@ class BaseScenario(ABC):
                 },
             },
             {
-                "id": "search_service_logs",
+                "id": self.prefixed_tool_id("search_service_logs"),
                 "type": "esql",
                 "description": (
                     f"Search telemetry logs for a specific service. "
@@ -383,14 +390,14 @@ class BaseScenario(ABC):
                     "params": {
                         "service_name": {
                             "description": f"The service to investigate ({svc_names})",
-                            "type": "string",
+                            "type": "text",
                             "optional": False,
                         }
                     },
                 },
             },
             {
-                "id": "search_known_anomalies",
+                "id": self.prefixed_tool_id("search_known_anomalies"),
                 "type": "index_search",
                 "description": (
                     f"Search the knowledge base for documented anomalies, failure "
@@ -402,7 +409,7 @@ class BaseScenario(ABC):
                 },
             },
             {
-                "id": "trace_anomaly_propagation",
+                "id": self.prefixed_tool_id("trace_anomaly_propagation"),
                 "type": "esql",
                 "description": (
                     "Trace the propagation path of anomalies across services. "
@@ -423,7 +430,7 @@ class BaseScenario(ABC):
                 },
             },
             {
-                "id": "browse_recent_errors",
+                "id": self.prefixed_tool_id("browse_recent_errors"),
                 "type": "esql",
                 "description": (
                     "Browse all recent ERROR and WARN log entries across all services. "
@@ -447,7 +454,7 @@ class BaseScenario(ABC):
         assessment = self.assessment_tool_config
         tools.append(
             {
-                "id": assessment["id"],
+                "id": self.prefixed_tool_id(assessment["id"]),
                 "type": "esql",
                 "description": assessment["description"],
                 "configuration": {
