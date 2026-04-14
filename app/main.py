@@ -557,7 +557,8 @@ async def chaos_resolve(body: dict):
         return JSONResponse(status_code=404, content={"error": "No active deployment"})
     channel = int(body.get("channel", 0))
     session_id = body.get("session_id", "")
-    result = inst.chaos_controller.resolve(channel, session_id=session_id)
+    user_email = body.get("user_email", "")
+    result = inst.chaos_controller.resolve(channel, session_id=session_id, user_email=user_email)
     if result.get("error") == "session_mismatch":
         return JSONResponse(status_code=403, content=result)
     if inst.dashboard_ws:
@@ -607,12 +608,12 @@ async def chaos_channel_status(channel: int, deployment_id: Optional[str] = None
 
 
 @app.get("/api/chaos/session/validate")
-async def chaos_session_validate(session_id: str, deployment_id: Optional[str] = None):
-    """Check if a session_id owns any active channels."""
+async def chaos_session_validate(session_id: str, deployment_id: Optional[str] = None, user_email: str = ""):
+    """Check if a session_id (or user_email fallback) owns any active channels."""
     inst = _get_instance(deployment_id)
     if not inst:
         return {"valid": False, "channels": []}
-    channels = inst.chaos_controller.validate_session(session_id)
+    channels = inst.chaos_controller.validate_session(session_id, user_email=user_email)
     return {"valid": len(channels) > 0, "channels": channels}
 
 

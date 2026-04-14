@@ -150,6 +150,7 @@ class ChaosController:
         channel: int,
         session_id: str = "",
         force: bool = False,
+        user_email: str = "",
     ) -> dict[str, Any]:
         if channel not in self._channel_registry:
             return {"error": f"Unknown channel {channel}"}
@@ -159,14 +160,12 @@ class ChaosController:
             if ch["state"] == STANDBY:
                 return {"status": "already_standby", "channel": channel}
 
-            # Session ownership check (skip if force=True or no session tracking)
-            if (
-                not force
-                and session_id
-                and ch["session_id"]
-                and ch["session_id"] != session_id
-            ):
-                return {"error": "session_mismatch", "channel": channel}
+            # Session ownership check (skip if force=True or channel has no owner)
+            if not force and ch["session_id"]:
+                session_matches = session_id and ch["session_id"] == session_id
+                email_matches = user_email and ch.get("user_email") and ch["user_email"] == user_email
+                if not session_matches and not email_matches:
+                    return {"error": "session_mismatch", "channel": channel}
 
             ch["state"] = STANDBY
             ch["mode"] = None
@@ -244,6 +243,7 @@ class ChaosController:
                     "mode": ch_state["mode"],
                     "triggered_at": ch_state["triggered_at"],
                     "session_id": ch_state["session_id"],
+                    "user_email": ch_state.get("user_email", ""),
                     "affected_services": ch_def["affected_services"],
                     "description": ch_def["description"],
                 }
@@ -285,14 +285,17 @@ class ChaosController:
                 "user_email": ch.get("user_email", ""),
             }
 
-    def validate_session(self, session_id: str) -> list[int]:
-        """Return list of channel IDs owned by this session_id."""
+    def validate_session(self, session_id: str, user_email: str = "") -> list[int]:
+        """Return list of channel IDs owned by this session_id or user_email."""
         with self._lock:
             self._expire_stale()
             return [
                 ch_id
                 for ch_id, ch in self._channels.items()
-                if ch["state"] == ACTIVE and ch["session_id"] == session_id
+                if ch["state"] == ACTIVE and (
+                    ch["session_id"] == session_id
+                    or (user_email and ch.get("user_email") and ch["user_email"] == user_email)
+                )
             ]
 
     def get_active_channels(self) -> list[int]:

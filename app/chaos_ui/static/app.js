@@ -14,6 +14,7 @@
     const SESSION_KEY = ns + '_chaos_session_id';
     let mySessionId = null;
     let myOwnedChannels = new Set();
+    let myEmail = ''; // auto-detected email (from proxy/env), used as session fallback
 
     function getSessionId() {
         if (mySessionId) return mySessionId;
@@ -47,12 +48,14 @@
         fetchChannels();
         validateSession();
         setInterval(fetchStatus, 2000);
-        // Auto-populate email from X-Forwarded-User header
+        // Auto-populate email from X-Forwarded-User header; re-validate session with email fallback
         fetch('/api/user/info')
             .then(r => r.json())
             .then(data => {
                 if (data.email) {
+                    myEmail = data.email;
                     document.getElementById('user-email').value = data.email;
+                    validateSession(); // re-run now that we have a detected email
                 }
             })
             .catch(() => { /* ignore */ });
@@ -60,13 +63,15 @@
 
     function validateSession() {
         const sid = getSessionId();
-        if (!sid) {
+        if (!sid && !myEmail) {
             myOwnedChannels.clear();
             updateSpikesLock();
             return;
         }
         const sep = qs ? '&' : '?';
-        fetch('/api/chaos/session/validate' + qs + sep + 'session_id=' + encodeURIComponent(sid))
+        let url = '/api/chaos/session/validate' + qs + sep + 'session_id=' + encodeURIComponent(sid || '');
+        if (myEmail) url += '&user_email=' + encodeURIComponent(myEmail);
+        fetch(url)
             .then(r => r.json())
             .then(data => {
                 if (data.valid && data.channels && data.channels.length > 0) {
@@ -100,12 +105,15 @@
                 if (selectedChannel && data[selectedChannel]) {
                     updateChannelInfo(selectedChannel, data[selectedChannel]);
                 }
-                // Rebuild owned channels set from live data
+                // Rebuild owned channels set from live data (session or email match)
                 const sid = getSessionId();
-                if (sid) {
+                if (sid || myEmail) {
                     const newOwned = new Set();
                     for (const [chId, ch] of Object.entries(data)) {
-                        if (ch.state === 'ACTIVE' && ch.session_id === sid) {
+                        if (ch.state !== 'ACTIVE') continue;
+                        const sessionMatch = sid && ch.session_id === sid;
+                        const emailMatch = myEmail && ch.user_email && ch.user_email === myEmail;
+                        if (sessionMatch || emailMatch) {
                             newOwned.add(parseInt(chId));
                         }
                     }
@@ -172,9 +180,9 @@
         // INJECT: always enabled for STANDBY channels
         btnInject.disabled = ch.state === 'ACTIVE';
 
-        // RESOLVE: only enabled if channel is ACTIVE and we own it
+        // RESOLVE: only enabled if channel is ACTIVE and we own it (by session or email)
         const sid = getSessionId();
-        const isMine = sid && ch.session_id === sid;
+        const isMine = (sid && ch.session_id === sid) || (myEmail && ch.user_email && ch.user_email === myEmail);
         btnResolve.disabled = ch.state !== 'ACTIVE' || !isMine;
     }
 
@@ -222,6 +230,7 @@
             body: JSON.stringify({
                 channel: selectedChannel,
                 session_id: sid || '',
+                user_email: myEmail || undefined,
                 deployment_id: deployId || undefined,
             }),
         })
@@ -253,6 +262,7 @@
             body: JSON.stringify({
                 channel: channel,
                 session_id: sid || '',
+                user_email: myEmail || undefined,
                 deployment_id: deployId || undefined,
             }),
         })
@@ -297,7 +307,7 @@
                 const remaining = Math.max(0, MAX_DURATION - elapsed);
                 const remMins = Math.floor(remaining / 60);
                 const remSecs = remaining % 60;
-                const isMine = sid && ch.session_id === sid;
+                const isMine = (sid && ch.session_id === sid) || (myEmail && ch.user_email && ch.user_email === myEmail);
                 const ownerTag = !isMine && ch.session_id
                     ? '<div class="ac-owner-tag">CONTROLLED BY ANOTHER OPERATOR</div>'
                     : '';
