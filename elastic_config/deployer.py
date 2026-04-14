@@ -64,7 +64,7 @@ class ScenarioDeployer(
         self.elastic_url = elastic_url.strip().rstrip("/")
         self.kibana_url = kibana_url.strip().rstrip("/")
         self.api_key = api_key.strip()
-        # kibana_display_url is used in user-facing links (workflows, agent, slides).
+        # kibana_display_url is used in user-facing links (workflows, agent).
         # Falls back to the real kibana_url if no proxy is configured.
         self.kibana_display_url = kibana_proxy.strip().rstrip("/") or self.kibana_url
         self.ns = scenario.namespace
