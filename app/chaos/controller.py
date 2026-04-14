@@ -78,6 +78,26 @@ class ChaosController:
             restored = sum(1 for r in rows if r["state"] == ACTIVE)
             if restored:
                 logger.info("Restored %d active chaos channels from SQLite", restored)
+                # Recalculate infra spikes from restored ACTIVE channels so that
+                # CPU/memory/latency effects survive an app crash and restart.
+                self._infra_spikes = {
+                    k: (1.0 if k == "latency_multiplier" else 0.0)
+                    for k in self._infra_spikes
+                }
+                for ch_id, ch in self._channels.items():
+                    if ch["state"] == ACTIVE:
+                        impact = self._channel_registry.get(ch_id, {}).get("infra_impact", {})
+                        for key, val in impact.items():
+                            if key in self._infra_spikes:
+                                self._infra_spikes[key] = max(self._infra_spikes[key], float(val))
+            # Overlay any manually-set spike values persisted via the sliders
+            persisted_spikes = self._store.get_spikes(self._deployment_id)
+            if persisted_spikes:
+                for key in self._infra_spikes:
+                    if key in persisted_spikes and persisted_spikes[key] is not None:
+                        self._infra_spikes[key] = max(
+                            self._infra_spikes[key], float(persisted_spikes[key])
+                        )
         except Exception:
             logger.exception("Failed to restore chaos channels from SQLite")
 
@@ -309,6 +329,8 @@ class ChaosController:
             for key in self._infra_spikes:
                 if key in spikes:
                     self._infra_spikes[key] = float(spikes[key])
+        if self._store and self._deployment_id:
+            self._store.upsert_spikes(self._deployment_id, self._infra_spikes)
 
     def get_infra_spikes(self) -> dict[str, float]:
         with self._lock:

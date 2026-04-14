@@ -144,6 +144,16 @@ CREATE TABLE IF NOT EXISTS chaos_channels (
 );
 """
 
+_CREATE_SPIKES_TABLE = """
+CREATE TABLE IF NOT EXISTS chaos_spikes (
+    deployment_id       TEXT PRIMARY KEY,
+    cpu_pct             REAL NOT NULL DEFAULT 0,
+    memory_pct          REAL NOT NULL DEFAULT 0,
+    k8s_oom_intensity   REAL NOT NULL DEFAULT 0,
+    latency_multiplier  REAL NOT NULL DEFAULT 1.0
+);
+"""
+
 
 class ChaosStore:
     """Thread-safe SQLite store for chaos channel state (session ownership)."""
@@ -157,6 +167,7 @@ class ChaosStore:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(_CREATE_CHAOS_TABLE)
+            conn.execute(_CREATE_SPIKES_TABLE)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -222,6 +233,42 @@ class ChaosStore:
                     (deployment_id,),
                 ).fetchall()
                 return [dict(r) for r in rows]
+
+    def upsert_spikes(self, deployment_id: str, spikes: dict) -> None:
+        """Persist infra spike values for a deployment."""
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO chaos_spikes
+                       (deployment_id, cpu_pct, memory_pct, k8s_oom_intensity, latency_multiplier)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        deployment_id,
+                        spikes.get("cpu_pct", 0),
+                        spikes.get("memory_pct", 0),
+                        spikes.get("k8s_oom_intensity", 0),
+                        spikes.get("latency_multiplier", 1.0),
+                    ),
+                )
+
+    def get_spikes(self, deployment_id: str) -> dict | None:
+        """Return persisted spike values for a deployment, or None."""
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM chaos_spikes WHERE deployment_id = ?",
+                    (deployment_id,),
+                ).fetchone()
+                return dict(row) if row else None
+
+    def delete_spikes_for_deployment(self, deployment_id: str) -> None:
+        """Remove persisted spike values for a deployment (e.g. on teardown)."""
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM chaos_spikes WHERE deployment_id = ?",
+                    (deployment_id,),
+                )
 
     def delete_channels_for_deployment(self, deployment_id: str) -> None:
         """Remove all persisted chaos rows for a deployment (e.g. on teardown)."""

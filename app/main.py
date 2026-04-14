@@ -51,6 +51,7 @@ def _purge_deployment_records(deployment_id: str) -> None:
     """Drop deployment row and any persisted chaos channels for this id."""
     store.delete(deployment_id)
     chaos_store.delete_channels_for_deployment(deployment_id)
+    chaos_store.delete_spikes_for_deployment(deployment_id)
 
 
 # In-memory progress trackers keyed by deployment_id
