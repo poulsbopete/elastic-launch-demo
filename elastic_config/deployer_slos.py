@@ -26,9 +26,10 @@ class SloMixin:
         }
         _slo_index = "traces-apm*,traces-*.otel-*"
 
+        scenario_name = self.scenario.scenario_name
         slo_definitions = [
             {
-                "name": "Availability SLO",
+                "name": f"{scenario_name}: Availability SLO",
                 "description": "Service availability - 95% target, grouped by service name",
                 "indicator": {
                     "type": "sli.kql.custom",
@@ -47,7 +48,7 @@ class SloMixin:
                 "tags": ["auto-created"],
             },
             {
-                "name": "Latency SLO",
+                "name": f"{scenario_name}: Latency SLO",
                 "description": "Service latency - 85% of requests under 2s, grouped by service name",
                 "indicator": {
                     "type": "sli.kql.custom",
@@ -66,7 +67,7 @@ class SloMixin:
                 "tags": ["auto-created"],
             },
             {
-                "name": "Error Rate SLO",
+                "name": f"{scenario_name}: Error Rate SLO",
                 "description": "Service error rate - less than 5% errors, grouped by service name",
                 "indicator": {
                     "type": "sli.kql.custom",
@@ -109,8 +110,13 @@ class SloMixin:
         notify(self.progress)
 
     def _cleanup_slos(self, client: httpx.Client) -> int:
-        """Delete SLOs named Availability SLO / Latency SLO / Error Rate SLO."""
-        _slo_names = {"Availability SLO", "Latency SLO", "Error Rate SLO"}
+        """Delete SLOs belonging to this scenario."""
+        scenario_name = self.scenario.scenario_name
+        _slo_names = {
+            f"{scenario_name}: Availability SLO",
+            f"{scenario_name}: Latency SLO",
+            f"{scenario_name}: Error Rate SLO",
+        }
         _headers = {
             "Content-Type": "application/json",
             "kbn-xsrf": "true",

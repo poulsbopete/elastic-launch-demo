@@ -31,7 +31,7 @@ class EventsMixin:
             operations.append({
                 "index": {
                     "id": f"{self.ns}-se-ch{num_str}",
-                    "title": f"Channel {num_str}: {ch_data['name']}",
+                    "title": f"{self.scenario.scenario_name}: SE CH {num_str}: {ch_data['name']}",
                     "description": f"{ch_data.get('subsystem', 'system')} — {error_type}",
                     "esql": {"query": esql_query},
                 }

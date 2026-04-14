@@ -26,7 +26,7 @@ class AgentMixin:
         for name_frag, wf_id in self._workflow_ids.items():
             if "remediation" in name_frag:
                 tools.append({
-                    "id": "remediation_action",
+                    "id": self.scenario.prefixed_tool_id("remediation_action"),
                     "type": "workflow",
                     "description": (
                         "Execute remediation actions for anomalies. Triggers the "
@@ -36,7 +36,7 @@ class AgentMixin:
                 })
             elif "escalation" in name_frag:
                 tools.append({
-                    "id": "escalation_action",
+                    "id": self.scenario.prefixed_tool_id("escalation_action"),
                     "type": "workflow",
                     "description": (
                         "Escalate critical anomalies and manage operational hold decisions."
@@ -140,11 +140,18 @@ class AgentMixin:
             f"an expert AI agent embedded in the Elastic observability platform."
         )
 
-        # Scenario-specific assessment tool name
-        assessment_tool = agent_cfg.get(
+        # Scenario-specific assessment tool name (prefixed so it matches the registered tool ID)
+        assessment_tool = scenario.prefixed_tool_id(agent_cfg.get(
             "assessment_tool_name",
             scenario.assessment_tool_config.get("id", "operational_assessment"),
-        )
+        ))
+        p_search_error_logs       = scenario.prefixed_tool_id("search_error_logs")
+        p_search_service_logs     = scenario.prefixed_tool_id("search_service_logs")
+        p_browse_recent_errors    = scenario.prefixed_tool_id("browse_recent_errors")
+        p_search_subsystem_health = scenario.prefixed_tool_id("search_subsystem_health")
+        p_search_known_anomalies  = scenario.prefixed_tool_id("search_known_anomalies")
+        p_trace_anomaly           = scenario.prefixed_tool_id("trace_anomaly_propagation")
+        p_remediation_action      = scenario.prefixed_tool_id("remediation_action")
 
         return f"""{identity}
 
@@ -166,11 +173,11 @@ class AgentMixin:
 - Use LIKE or KQL() for text matching — NEVER use MATCH()
 
 ## Tool Selection Guide
-1. **Known error type** → `search_error_logs` — parameterized, correct fields
-2. **Specific service** → `search_service_logs` — parameterized, correct fields
-3. **General awareness** → `browse_recent_errors` or `search_subsystem_health`
-4. **Historical patterns** → `search_known_anomalies` — knowledge base lookup
-5. **Cascade analysis** → `trace_anomaly_propagation` — cross-service correlation
+1. **Known error type** → `{p_search_error_logs}` — parameterized, correct fields
+2. **Specific service** → `{p_search_service_logs}` — parameterized, correct fields
+3. **General awareness** → `{p_browse_recent_errors}` or `{p_search_subsystem_health}`
+4. **Historical patterns** → `{p_search_known_anomalies}` — knowledge base lookup
+5. **Cascade analysis** → `{p_trace_anomaly}` — cross-service correlation
 6. **Operational readiness** → `{assessment_tool}` — overall system health evaluation
 Do NOT write custom ES|QL queries. Use the parameterized tools.
 
@@ -182,7 +189,7 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
 5. **Subsystem Impact**: Evaluate if fault is isolated or propagating
 6. **Known Pattern Matching**: Check knowledge base for similar anomalies
 7. **Severity Classification**: ADVISORY, CAUTION, WARNING, or CRITICAL
-8. **Remediation**: When the user asks you to remediate, look up the recommended remediation_action from the knowledge base entry for that channel. Use the remediation_action tool with the appropriate action_type and the affected channel number. IMPORTANT: if you fetched a specific case earlier in the conversation (e.g. via platform.core.cases), always pass that case's `id` as the `case_id` parameter so the workflow closes the correct case — never rely on the tag search to find it. Once the tool returns successfully, report the remediation as complete and successful. Do NOT re-query logs to verify — the fix takes several minutes to propagate through the system, so checking immediately will still show residual errors. Do NOT execute remediation unless the user explicitly asks you to.
+8. **Remediation**: When the user asks you to remediate, look up the recommended remediation_action from the knowledge base entry for that channel. Use the `{p_remediation_action}` tool with the appropriate action_type and the affected channel number. IMPORTANT: if you fetched a specific case earlier in the conversation (e.g. via platform.core.cases), always pass that case's `id` as the `case_id` parameter so the workflow closes the correct case — never rely on the tag search to find it. Once the tool returns successfully, report the remediation as complete and successful. Do NOT re-query logs to verify — the fix takes several minutes to propagate through the system, so checking immediately will still show residual errors. Do NOT execute remediation unless the user explicitly asks you to.
 
 ## Available Services
 {svc_names}
@@ -205,7 +212,10 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
         )
         # Collect tool IDs from scenario's tool_definitions + workflow tools
         tool_ids = [t["id"] for t in self.scenario.tool_definitions]
-        tool_ids.extend(["remediation_action", "escalation_action"])
+        tool_ids.extend([
+            self.scenario.prefixed_tool_id("remediation_action"),
+            self.scenario.prefixed_tool_id("escalation_action"),
+        ])
         for tool_id in tool_ids:
             client.delete(
                 f"{self.kibana_url}/api/agent_builder/tools/{tool_id}",

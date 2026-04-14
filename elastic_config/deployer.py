@@ -223,6 +223,9 @@ class ScenarioDeployer(
             # Delete cases created by workflows
             results["cases_deleted"] = self._cleanup_cases(client, self.ns)
 
+            # Delete scenario-named data views
+            results["data_views_deleted"] = self._cleanup_data_views(client)
+
         return results
 
     def teardown_with_progress(self, callback: ProgressCallback | None = None) -> DeployProgress:
@@ -237,9 +240,9 @@ class ScenarioDeployer(
             DeployStep("Delete audit indices"),         # 6
             DeployStep("Delete dashboard"),             # 7
             DeployStep("Delete APM ML jobs"),           # 8
-            DeployStep("Delete APM rollup data"),       # 9
-            DeployStep("Delete SLOs"),                  # 10
-            DeployStep("Delete cases"),                 # 11
+            DeployStep("Delete SLOs"),                  # 9
+            DeployStep("Delete cases"),                 # 10
+            DeployStep("Delete data views"),            # 11
         ])
         _notify = callback or (lambda p: None)
         _notify(progress)
@@ -369,40 +372,8 @@ class ScenarioDeployer(
                     step.detail = str(exc)
                 _notify(progress)
 
-                # Step 9: Delete APM rollup data streams
+                # Step 9: Delete SLOs
                 step = progress.steps[9]
-                step.status = "running"
-                _notify(progress)
-                try:
-                    deleted_ds = 0
-                    for ds_pattern in [
-                        "metrics-transaction.1m.otel-*",
-                        "metrics-service_destination.1m.otel-*",
-                        "metrics-service_summary.1m.otel-*",
-                    ]:
-                        resp = client.get(
-                            f"{self.elastic_url}/_data_stream/{ds_pattern}",
-                            headers=_es_headers(self.api_key),
-                        )
-                        if resp.status_code < 300:
-                            for ds in resp.json().get("data_streams", []):
-                                ds_name = ds.get("name", "")
-                                if ds_name:
-                                    r = client.delete(
-                                        f"{self.elastic_url}/_data_stream/{ds_name}",
-                                        headers=_es_headers(self.api_key),
-                                    )
-                                    if r.status_code < 300:
-                                        deleted_ds += 1
-                    step.status = "ok"
-                    step.detail = f"Deleted {deleted_ds} APM rollup data streams"
-                except Exception as exc:
-                    step.status = "failed"
-                    step.detail = str(exc)
-                _notify(progress)
-
-                # Step 10: Delete SLOs
-                step = progress.steps[10]
                 step.status = "running"
                 _notify(progress)
                 try:
@@ -414,14 +385,27 @@ class ScenarioDeployer(
                     step.detail = str(exc)
                 _notify(progress)
 
-                # Step 11: Delete cases
-                step = progress.steps[11]
+                # Step 10: Delete cases
+                step = progress.steps[10]
                 step.status = "running"
                 _notify(progress)
                 try:
                     deleted_cases = self._cleanup_cases(client, self.ns)
                     step.status = "ok"
                     step.detail = f"Deleted {deleted_cases} cases"
+                except Exception as exc:
+                    step.status = "failed"
+                    step.detail = str(exc)
+                _notify(progress)
+
+                # Step 11: Delete scenario-named data views
+                step = progress.steps[11]
+                step.status = "running"
+                _notify(progress)
+                try:
+                    deleted_views = self._cleanup_data_views(client)
+                    step.status = "ok"
+                    step.detail = f"Deleted {deleted_views} data views"
                 except Exception as exc:
                     step.status = "failed"
                     step.detail = str(exc)
@@ -539,29 +523,8 @@ class ScenarioDeployer(
             except Exception:
                 pass
 
-        # Delete alert rules tagged with ANY known namespace
-        for ns in all_namespaces:
-            try:
-                for page in range(1, 11):
-                    resp = client.get(
-                        f"{self.kibana_url}/api/alerting/rules/_find?per_page=100&page={page}&filter=alert.attributes.tags:{ns}",
-                        headers=_kibana_headers(self.api_key),
-                    )
-                    if resp.status_code >= 300:
-                        break
-                    rules = resp.json().get("data", [])
-                    if not rules:
-                        break
-                    for rule in rules:
-                        rule_id = rule.get("id", "")
-                        if rule_id:
-                            client.delete(
-                                f"{self.kibana_url}/api/alerting/rule/{rule_id}",
-                                headers=_kibana_headers(self.api_key),
-                            )
-                            deleted += 1
-            except Exception:
-                pass
+        # Alert rule cleanup is handled per-scenario in _cleanup_alerts (called from _deploy_alerting).
+        # Do not delete rules from other scenarios here.
 
         # Delete stream queries with ANY known namespace prefix
         try:
@@ -612,17 +575,19 @@ class ScenarioDeployer(
             except Exception:
                 pass
 
-        # Delete ALL known tool IDs (shared + scenario-specific)
-        all_tool_ids = {
+        # Delete ALL known tool IDs — all tool IDs are namespace-prefixed
+        _base_tool_names = [
             "search_error_logs", "search_subsystem_health", "search_service_logs",
             "search_known_anomalies", "trace_anomaly_propagation",
             "browse_recent_errors", "remediation_action", "escalation_action",
-        }
-        # Add each scenario's assessment tool ID
+        ]
+        all_tool_ids: set[str] = set()
         for s_meta in all_scenarios:
             try:
                 s = get_scenario(s_meta["id"])
-                all_tool_ids.add(s.assessment_tool_config["id"])
+                for name in _base_tool_names:
+                    all_tool_ids.add(s.prefixed_tool_id(name))
+                all_tool_ids.add(s.prefixed_tool_id(s.assessment_tool_config["id"]))
             except Exception:
                 pass
         for tool_id in all_tool_ids:
