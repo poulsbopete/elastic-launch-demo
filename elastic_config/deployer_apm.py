@@ -23,28 +23,6 @@ class ApmMixin:
         notify(self.progress)
 
         try:
-            # Delete stale rollup data streams so timestamps are fresh
-            for ds_pattern in [
-                "metrics-transaction.1m.otel-*",
-                "metrics-service_destination.1m.otel-*",
-                "metrics-service_summary.1m.otel-*",
-            ]:
-                try:
-                    resp = client.get(
-                        f"{self.elastic_url}/_data_stream/{ds_pattern}",
-                        headers=_es_headers(self.api_key),
-                    )
-                    if resp.status_code < 300:
-                        for ds in resp.json().get("data_streams", []):
-                            ds_name = ds.get("name", "")
-                            if ds_name:
-                                client.delete(
-                                    f"{self.elastic_url}/_data_stream/{ds_name}",
-                                    headers=_es_headers(self.api_key),
-                                )
-                except Exception:
-                    pass
-
             gen = ApmRollupGenerator(self.scenario, self.elastic_url, self.api_key)
             counts = gen.generate_all(hours=12)
             total = sum(counts.values())

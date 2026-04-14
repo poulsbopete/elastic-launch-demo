@@ -84,19 +84,27 @@ class DataViewsMixin:
         step.detail = f"Created {created} data views"
         notify(self.progress)
 
-    # Only the views whose name includes the scenario name — the generic OTel
-    # views (logs-*, metrics-hostmetricsreceiver.otel-*) are not touched.
-    _SCENARIO_NAMED_VIEW_IDS = ["logs*", "traces-*", "metrics-*"]
-
     def _cleanup_data_views(self, client: httpx.Client) -> int:
-        """Delete data views that were named after the scenario. Returns count deleted."""
+        """Delete data views belonging to this scenario (matched by name prefix)."""
+        scenario_prefix = f"{self.scenario.scenario_name} "
         deleted = 0
-        for view_id in self._SCENARIO_NAMED_VIEW_IDS:
-            encoded_id = urllib.parse.quote(view_id, safe="")
-            resp = client.delete(
-                f"{self.kibana_url}/api/data_views/data_view/{encoded_id}",
+        try:
+            resp = client.get(
+                f"{self.kibana_url}/api/data_views",
                 headers=_kibana_headers(self.api_key),
             )
             if resp.status_code < 300:
-                deleted += 1
+                for view in resp.json().get("data_view", []):
+                    if view.get("name", "").startswith(scenario_prefix):
+                        view_id = view.get("id", "")
+                        if view_id:
+                            encoded_id = urllib.parse.quote(view_id, safe="")
+                            r = client.delete(
+                                f"{self.kibana_url}/api/data_views/data_view/{encoded_id}",
+                                headers=_kibana_headers(self.api_key),
+                            )
+                            if r.status_code < 300:
+                                deleted += 1
+        except Exception:
+            pass
         return deleted

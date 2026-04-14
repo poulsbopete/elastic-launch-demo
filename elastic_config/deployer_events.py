@@ -56,7 +56,8 @@ class EventsMixin:
         notify(self.progress)
 
     def _cleanup_significant_events(self, client: httpx.Client):
-        """Delete stream queries for this namespace."""
+        """Delete stream queries belonging to this scenario (matched by title prefix)."""
+        scenario_prefix = f"{self.scenario.scenario_name}:"
         try:
             resp = client.get(
                 f"{self.kibana_url}/api/streams/logs.otel/queries",
@@ -66,10 +67,9 @@ class EventsMixin:
                 data = resp.json()
                 queries = data if isinstance(data, list) else data.get("queries", [])
                 for q in queries:
-                    qid = q.get("id", "")
-                    if qid.startswith(f"{self.ns}-se-"):
+                    if q.get("title", "").startswith(scenario_prefix):
                         client.delete(
-                            f"{self.kibana_url}/api/streams/logs.otel/queries/{qid}",
+                            f"{self.kibana_url}/api/streams/logs.otel/queries/{q.get('id', '')}",
                             headers=_kibana_headers(self.api_key),
                         )
         except Exception:
