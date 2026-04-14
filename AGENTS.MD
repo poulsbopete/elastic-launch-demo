@@ -1169,7 +1169,7 @@ def prefixed_tool_id(self, base_id: str) -> str:
 
 1. **Tool creation** (`deployer_agent.py` `_deploy_tools`) — workflow tools (`remediation_action`, `escalation_action`) must use `self.scenario.prefixed_tool_id(...)`, not bare string literals
 2. **Tool cleanup** (`_cleanup_agent`) — same, use `prefixed_tool_id()` not hardcoded strings
-3. **Cross-scenario cleanup** (`_cleanup_all_scenarios`) — iterate per-scenario calling `s.prefixed_tool_id(name)` for each base tool name; do NOT use a flat hardcoded set
+3. **Scenario teardown** (`_teardown_scenario` → `_cleanup_agent`) — uses `prefixed_tool_id()` for each tool name; do NOT use a flat hardcoded set
 4. **Agent system prompt** — Tool Selection Guide and Remediation instructions must reference prefixed IDs so the LLM calls the correct tool name
 5. **Knowledge base documents** — Investigation Procedure and Remediation sections reference tool names; use `self.scenario.prefixed_tool_id(...)` inside the f-string
 

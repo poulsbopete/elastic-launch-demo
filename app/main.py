@@ -1072,76 +1072,51 @@ async def stop_and_teardown(body: dict = {}):
 
     deployment_id = body.get("deployment_id") if body else None
 
-    if deployment_id:
-        # Stop specific deployment — remove from registry and stop generators synchronously
-        inst = registry.remove(deployment_id)
-        if inst:
-            try:
-                inst.stop()
-                logger.info(
-                    "Stopped deployment %s via stop-and-teardown", deployment_id
-                )
-            except Exception as exc:
-                logger.warning("Error stopping deployment %s: %s", deployment_id, exc)
+    if not deployment_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="deployment_id is required")
 
-            # Run teardown in background thread with progress
-            if inst.ctx.elastic_url and inst.ctx.elastic_api_key:
-                deployer = ScenarioDeployer(
-                    inst.ctx.scenario,
-                    inst.ctx.elastic_url,
-                    inst.ctx.kibana_url,
-                    inst.ctx.elastic_api_key,
-                )
+    # Stop specific deployment — remove from registry and stop generators synchronously
+    inst = registry.remove(deployment_id)
+    if inst:
+        try:
+            inst.stop()
+            logger.info(
+                "Stopped deployment %s via stop-and-teardown", deployment_id
+            )
+        except Exception as exc:
+            logger.warning("Error stopping deployment %s: %s", deployment_id, exc)
 
-                def _progress_cb(progress):
-                    _teardown_progress[deployment_id] = progress.to_dict()
+        # Run teardown in background thread with progress
+        if inst.ctx.elastic_url and inst.ctx.elastic_api_key:
+            deployer = ScenarioDeployer(
+                inst.ctx.scenario,
+                inst.ctx.elastic_url,
+                inst.ctx.kibana_url,
+                inst.ctx.elastic_api_key,
+            )
 
-                def _run_teardown():
-                    deployer.teardown_with_progress(callback=_progress_cb)
-                    _purge_deployment_records(deployment_id)
+            def _progress_cb(progress):
+                _teardown_progress[deployment_id] = progress.to_dict()
 
-                _teardown_progress[deployment_id] = {
-                    "finished": False,
-                    "error": "",
-                    "steps": [],
-                }
-                thread = threading.Thread(target=_run_teardown, daemon=True)
-                thread.start()
+            def _run_teardown():
+                deployer.teardown_with_progress(callback=_progress_cb)
+                _purge_deployment_records(deployment_id)
 
-                return {"status": "stopping", "deployment_id": deployment_id}
-
-        _purge_deployment_records(deployment_id)
-        # No credentials — mark as instantly done
-        _teardown_progress[deployment_id] = {"finished": True, "error": "", "steps": []}
-        return {"status": "stopping", "deployment_id": deployment_id}
-    else:
-        # Stop ALL deployments
-        registry.stop_all()
-        logger.info("All generators stopped via stop-and-teardown")
-
-        # Clean up ALL scenario artifacts using first available credentials
-        elastic_url, kibana_url, api_key = _get_default_creds()
-
-        if not elastic_url or not api_key:
-            return {
-                "ok": True,
-                "generators_stopped": True,
-                "artifacts_deleted": 0,
-                "note": "No Elastic credentials — generators stopped but no artifacts to clean",
+            _teardown_progress[deployment_id] = {
+                "finished": False,
+                "error": "",
+                "steps": [],
             }
+            thread = threading.Thread(target=_run_teardown, daemon=True)
+            thread.start()
 
-        result = ScenarioDeployer.cleanup_all(elastic_url, kibana_url, api_key)
+            return {"status": "stopping", "deployment_id": deployment_id}
 
-        # Clear all deployment records from store
-        for rec in store.get_all_active():
-            _purge_deployment_records(rec["deployment_id"])
-
-        return {
-            "ok": result.get("ok", False),
-            "generators_stopped": True,
-            "artifacts_deleted": result.get("deleted", 0),
-            "error": result.get("error", ""),
-        }
+    _purge_deployment_records(deployment_id)
+    # No credentials — mark as instantly done
+    _teardown_progress[deployment_id] = {"finished": True, "error": "", "steps": []}
+    return {"status": "stopping", "deployment_id": deployment_id}
 
 
 @app.get("/api/setup/teardown-progress")

@@ -175,58 +175,67 @@ class ScenarioDeployer(
         found["deployed"] = found.get("knowledge_base", False) or found.get("dashboard", False)
         return found
 
-    def teardown(self) -> dict[str, Any]:
-        """Remove scenario-specific resources from Elastic."""
+    def _teardown_scenario(self, client: httpx.Client) -> dict[str, Any]:
+        """Remove all artifacts for the current scenario using the provided client.
+
+        Shared by teardown() and the deploy pre-cleanup step so both paths use
+        identical logic.
+        """
         results = {}
-        with httpx.Client(timeout=30.0, verify=True) as client:
-            # Delete KB index
-            resp = client.delete(
-                f"{self.elastic_url}/{self.ns}-knowledge-base",
+
+        # Delete KB index
+        resp = client.delete(
+            f"{self.elastic_url}/{self.ns}-knowledge-base",
+            headers=_es_headers(self.api_key),
+        )
+        results["knowledge_base"] = resp.status_code < 300
+
+        # Delete audit indices and remediation queue
+        for suffix in ["significant-events-audit", "remediation-audit", "escalation-audit", "remediation-queue", "daily-report-audit"]:
+            client.delete(
+                f"{self.elastic_url}/{self.ns}-{suffix}",
                 headers=_es_headers(self.api_key),
             )
-            results["knowledge_base"] = resp.status_code < 300
 
-            # Delete audit indices and remediation queue
-            for suffix in ["significant-events-audit", "remediation-audit", "escalation-audit", "remediation-queue", "daily-report-audit"]:
-                client.delete(
-                    f"{self.elastic_url}/{self.ns}-{suffix}",
-                    headers=_es_headers(self.api_key),
-                )
+        # Delete workflows
+        results["workflows_deleted"] = self._cleanup_workflows(client)
 
-            # Delete workflows
-            results["workflows_deleted"] = self._cleanup_workflows(client)
+        # Delete alert rules
+        results["alerts_deleted"] = self._cleanup_alerts(client)
 
-            # Delete alert rules
-            results["alerts_deleted"] = self._cleanup_alerts(client)
+        # Delete agent + tools
+        self._cleanup_agent(client)
 
-            # Delete agent + tools
-            self._cleanup_agent(client)
+        # Delete significant events
+        self._cleanup_significant_events(client)
 
-            # Delete significant events
-            self._cleanup_significant_events(client)
+        # Delete dashboard
+        resp = client.post(
+            f"{self.kibana_url}/api/saved_objects/_bulk_delete",
+            headers=_kibana_headers(self.api_key),
+            json=[{"type": "dashboard", "id": f"{self.ns}-exec-dashboard"}],
+        )
+        results["dashboard"] = resp.status_code < 300
 
-            # Delete dashboard
-            resp = client.post(
-                f"{self.kibana_url}/api/saved_objects/_bulk_delete",
-                headers=_kibana_headers(self.api_key),
-                json=[{"type": "dashboard", "id": f"{self.ns}-exec-dashboard"}],
-            )
-            results["dashboard"] = resp.status_code < 300
+        # Delete APM ML jobs and datafeeds
+        self._cleanup_apm_ml(client)
+        results["apm_ml_cleaned"] = True
 
-            # Delete APM ML jobs and datafeeds
-            self._cleanup_apm_ml(client)
-            results["apm_ml_cleaned"] = True
+        # Delete SLOs
+        results["slos_deleted"] = self._cleanup_slos(client)
 
-            # Delete SLOs
-            results["slos_deleted"] = self._cleanup_slos(client)
+        # Delete cases created by workflows
+        results["cases_deleted"] = self._cleanup_cases(client, self.ns)
 
-            # Delete cases created by workflows
-            results["cases_deleted"] = self._cleanup_cases(client, self.ns)
-
-            # Delete scenario-named data views
-            results["data_views_deleted"] = self._cleanup_data_views(client)
+        # Delete scenario-named data views
+        results["data_views_deleted"] = self._cleanup_data_views(client)
 
         return results
+
+    def teardown(self) -> dict[str, Any]:
+        """Remove scenario-specific resources from Elastic."""
+        with httpx.Client(timeout=30.0, verify=True) as client:
+            return self._teardown_scenario(client)
 
     def teardown_with_progress(self, callback: ProgressCallback | None = None) -> DeployProgress:
         """Remove scenario resources with staged progress reporting."""
@@ -424,12 +433,11 @@ class ScenarioDeployer(
     def _cleanup_cases(self, client: httpx.Client, ns: str) -> int:
         """Delete all Kibana cases tagged with the given namespace."""
         deleted = 0
-        page = 1
         while True:
             resp = client.get(
                 f"{self.kibana_url}/api/cases/_find",
                 headers=_kibana_headers(self.api_key),
-                params={"tags": ns, "perPage": 100, "page": page},
+                params={"tags": ns, "owner": "observability", "perPage": 100, "page": 1},
             )
             if resp.status_code >= 300:
                 break
@@ -446,9 +454,8 @@ class ScenarioDeployer(
                 )
                 if r.status_code < 300:
                     deleted += len(ids)
-            if len(cases) < 100:
-                break
-            page += 1
+                else:
+                    break  # avoid infinite loop if delete fails
         return deleted
 
     # ── Step implementations ───────────────────────────────────────────
@@ -484,215 +491,20 @@ class ScenarioDeployer(
         step.detail = f"ES: {self.elastic_url}"
         notify(self.progress)
 
-    # ── Cross-scenario cleanup ────────────────────────────────────────
-
     def _cleanup_all_scenarios_step(self, client: httpx.Client, notify: ProgressCallback):
-        """Deploy step: clean up artifacts from ALL known scenarios."""
+        """Deploy step: clean up current scenario artifacts before redeploying."""
         step = self._step(3)
         step.status = "running"
         notify(self.progress)
 
         try:
-            deleted = self._cleanup_all_scenarios(client)
+            self._teardown_scenario(client)
             step.status = "ok"
-            step.detail = f"Cleaned {deleted} artifacts"
+            step.detail = "Previous deployment cleaned"
         except Exception as exc:
             step.status = "ok"  # non-fatal — continue deploying
             step.detail = f"Partial cleanup: {exc}"
             logger.warning("Cleanup error (non-fatal): %s", exc)
         notify(self.progress)
 
-    def _cleanup_all_scenarios(self, client: httpx.Client) -> int:
-        """Delete artifacts for ALL known scenarios (not just the current one)."""
-        from scenarios import get_scenario, list_scenarios
 
-        all_scenarios = list_scenarios()
-        deleted = 0
-
-        # Collect all namespaces, scenario names, and agent IDs
-        all_namespaces = []
-        all_scenario_names = []
-        all_agent_ids = []
-        for s_meta in all_scenarios:
-            try:
-                s = get_scenario(s_meta["id"])
-                all_namespaces.append(s.namespace)
-                all_scenario_names.append(s.scenario_name)
-                agent_id = s.agent_config.get("id", f"{s.namespace}-analyst")
-                all_agent_ids.append(agent_id)
-            except Exception:
-                pass
-
-        # Alert rule cleanup is handled per-scenario in _cleanup_alerts (called from _deploy_alerting).
-        # Do not delete rules from other scenarios here.
-
-        # Delete stream queries with ANY known namespace prefix
-        try:
-            resp = client.get(
-                f"{self.kibana_url}/api/streams/logs.otel/queries",
-                headers=_kibana_headers(self.api_key),
-            )
-            if resp.status_code < 300:
-                data = resp.json()
-                queries = data if isinstance(data, list) else data.get("queries", [])
-                for q in queries:
-                    qid = q.get("id", "")
-                    for ns in all_namespaces:
-                        if qid.startswith(f"{ns}-se-"):
-                            client.delete(
-                                f"{self.kibana_url}/api/streams/logs.otel/queries/{qid}",
-                                headers=_kibana_headers(self.api_key),
-                            )
-                            deleted += 1
-                            break
-        except Exception:
-            pass
-
-        # Delete workflows matching ANY known scenario name
-        try:
-            items = self._wf_search(client)
-            for item in items:
-                wf_name = item.get("name", "")
-                for sn in all_scenario_names:
-                    if sn in wf_name:
-                        wf_id = item.get("id", "")
-                        if wf_id:
-                            self._wf_delete(client, wf_id)
-                            deleted += 1
-                        break
-        except Exception:
-            pass
-
-        # Delete ALL known agent IDs
-        for agent_id in all_agent_ids:
-            try:
-                r = client.delete(
-                    f"{self.kibana_url}/api/agent_builder/agents/{agent_id}",
-                    headers=_kibana_headers(self.api_key),
-                )
-                if r.status_code < 300:
-                    deleted += 1
-            except Exception:
-                pass
-
-        # Delete ALL known tool IDs — all tool IDs are namespace-prefixed
-        _base_tool_names = [
-            "search_error_logs", "search_subsystem_health", "search_service_logs",
-            "search_known_anomalies", "trace_anomaly_propagation",
-            "browse_recent_errors", "remediation_action", "escalation_action",
-        ]
-        all_tool_ids: set[str] = set()
-        for s_meta in all_scenarios:
-            try:
-                s = get_scenario(s_meta["id"])
-                for name in _base_tool_names:
-                    all_tool_ids.add(s.prefixed_tool_id(name))
-                all_tool_ids.add(s.prefixed_tool_id(s.assessment_tool_config["id"]))
-            except Exception:
-                pass
-        for tool_id in all_tool_ids:
-            try:
-                client.delete(
-                    f"{self.kibana_url}/api/agent_builder/tools/{tool_id}",
-                    headers=_kibana_headers(self.api_key),
-                )
-            except Exception:
-                pass
-
-        # Delete ALL known dashboards
-        for ns in all_namespaces:
-            try:
-                r = client.post(
-                    f"{self.kibana_url}/api/saved_objects/_bulk_delete",
-                    headers=_kibana_headers(self.api_key),
-                    json=[{"type": "dashboard", "id": f"{ns}-exec-dashboard"}],
-                )
-                if r.status_code < 300:
-                    deleted += 1
-            except Exception:
-                pass
-
-        # Delete ALL known KB indices and audit indices
-        for ns in all_namespaces:
-            for suffix in [
-                "knowledge-base",
-                "significant-events-audit",
-                "remediation-audit",
-                "escalation-audit",
-                "remediation-queue",
-                "daily-report-audit",
-            ]:
-                try:
-                    r = client.delete(
-                        f"{self.elastic_url}/{ns}-{suffix}",
-                        headers=_es_headers(self.api_key),
-                    )
-                    if r.status_code < 300:
-                        deleted += 1
-                except Exception:
-                    pass
-
-        # Reset OTLP metric data streams so TSDB mappings are recreated fresh.
-        # This ensures new metric fields (added to generators after the data stream
-        # was first created) are included in the mapping.  The OTLP integration
-        # recreates these automatically once generators start sending data.
-        for ds_pattern in [
-            "metrics-*.otel-*",
-            "traces-*.otel-*",
-        ]:
-            try:
-                resp = client.get(
-                    f"{self.elastic_url}/_data_stream/{ds_pattern}",
-                    headers=_es_headers(self.api_key),
-                )
-                if resp.status_code < 300:
-                    streams = resp.json().get("data_streams", [])
-                    for ds in streams:
-                        ds_name = ds.get("name", "")
-                        if ds_name:
-                            r = client.delete(
-                                f"{self.elastic_url}/_data_stream/{ds_name}",
-                                headers=_es_headers(self.api_key),
-                            )
-                            if r.status_code < 300:
-                                deleted += 1
-                                logger.info("Deleted data stream %s for mapping refresh", ds_name)
-            except Exception as exc:
-                logger.warning("Data stream cleanup error (non-fatal): %s", exc)
-
-        # Delete APM ML jobs for all namespaces
-        for ns in all_namespaces:
-            try:
-                self._cleanup_apm_ml(client, ns)
-            except Exception:
-                pass
-
-        # Delete cases for all namespaces
-        for ns in all_namespaces:
-            try:
-                deleted += self._cleanup_cases(client, ns)
-            except Exception:
-                pass
-
-        logger.info("Cleaned up %d artifacts across all scenarios", deleted)
-        return deleted
-
-    @classmethod
-    def cleanup_all(cls, elastic_url: str, kibana_url: str, api_key: str) -> dict[str, Any]:
-        """Class method: clean up ALL scenario artifacts without needing a specific scenario."""
-        from scenarios import get_scenario, list_scenarios
-
-        all_scenarios = list_scenarios()
-        if not all_scenarios:
-            return {"ok": True, "deleted": 0}
-
-        # Use the first scenario just to get a deployer instance
-        first = get_scenario(all_scenarios[0]["id"])
-        deployer = cls(first, elastic_url, kibana_url, api_key)
-
-        try:
-            with httpx.Client(timeout=60.0, verify=True) as client:
-                deleted = deployer._cleanup_all_scenarios(client)
-            return {"ok": True, "deleted": deleted}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}

@@ -87,7 +87,7 @@ class AgentMixin:
 
         agent_body = {
             "id": agent_id,
-            "name": agent_cfg.get("name", f"{self.scenario.scenario_name} Analyst"),
+            "name": f"{self.scenario.scenario_name}: {agent_cfg.get('name', 'Analyst')}",
             "description": agent_cfg.get(
                 "description",
                 f"AI-powered analyst for {self.scenario.scenario_name}.",

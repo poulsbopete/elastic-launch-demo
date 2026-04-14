@@ -18,14 +18,8 @@ class PlatformMixin:
         configured = []
         errors = []
 
-        # 1. Enable wired streams (always disable/re-enable to ensure clean state)
+        # 1. Enable wired streams (idempotent — safe to call if already enabled)
         try:
-            # Always cycle — ensures logs.otel is wired and UI reflects enabled state
-            client.post(
-                f"{self.kibana_url}/api/streams/_disable",
-                headers=_kibana_headers(self.api_key),
-                json={},
-            )
             resp = client.post(
                 f"{self.kibana_url}/api/streams/_enable",
                 headers=_kibana_headers(self.api_key),

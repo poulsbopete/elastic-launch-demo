@@ -40,7 +40,7 @@ steps:
     steps:
       - name: check_SLOs
         type: if
-        condition: "foreach.item.name : *Error Rate SLO* OR foreach.item.name : *Latency SLO* OR foreach.item.name : *Availability SLO*"
+        condition: "foreach.item.name : \"__SCENARIO_NAME__*\""
         steps:
           - name: print-results
             type: console
