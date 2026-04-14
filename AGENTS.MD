@@ -112,6 +112,107 @@ POST /api/agent_builder/agents
 ```
 GET /api/agent_builder/agents    — List all agents
 GET /api/agent_builder/tools     — List all tools (includes readonly defaults; filter by readonly=false)
+GET /api/agent_builder/skills    — List all skills (built-in + user-created)
+```
+
+---
+
+## Kibana Agent Builder — Skills API (Technical Preview, 9.4.0+)
+
+Skills are reusable instruction sets (markdown content) that can be attached to agents. They may also reference tools, giving the agent additional capabilities in a composable way.
+
+### Skill Schema
+
+```
+POST /api/agent_builder/skills
+{
+  "id": "<skill-id>",
+  "name": "...",
+  "description": "...",
+  "content": "...",             // Markdown instructions for the skill
+  "tool_ids": ["tool1", ...],  // Optional: tool IDs this skill uses (max 100)
+  "referenced_content": [      // Optional: inline reference docs (max 100)
+    {
+      "name": "...",
+      "relativePath": "...",
+      "content": "..."
+    }
+  ]
+}
+```
+
+**Required fields:** `id`, `name`, `description`, `content`
+
+**Field notes:**
+
+- `content` — Markdown string; this is the skill's instruction body shown to the agent
+- `tool_ids` — array of tool IDs from the tool registry; defaults to `[]`
+- `referenced_content` — inline reference material the skill can cite; each item requires `name`, `relativePath`, and `content`
+
+**Gotchas:**
+
+- Requires `kbn-xsrf: true` header on all mutating requests (POST, PUT, DELETE)
+- Built-in (plugin-provided) skills are read-only — cannot be updated or deleted
+- Skills do NOT have a `type` field (unlike tools)
+- `include_plugins=true` query param on GET includes built-in skills from plugins
+
+### Updating Existing Skills (PUT)
+
+POST fails if the skill already exists. Use PUT to update:
+```
+PUT /api/agent_builder/skills/{skill_id}
+{
+  "name": "...",
+  "description": "...",
+  "content": "...",
+  "tool_ids": ["tool1", ...],
+  "referenced_content": [...]
+}
+```
+**Note:** PUT body must NOT include `id` — only `name`, `description`, `content`, `tool_ids`, and `referenced_content` are accepted.
+
+### Deleting Skills (DELETE)
+
+```
+DELETE /api/agent_builder/skills/{skill_id}?force=false
+```
+
+- Returns `{"success": true}` on success
+- If agents still reference the skill, returns **409 Conflict** with a list of affected agents unless `force=true`
+- `force=true` removes the skill from all referencing agents before deleting
+- Built-in skills cannot be deleted (will return an error)
+
+### Attaching Skills to Agents
+
+Skills are referenced from agents via `configuration.skills` (analogous to `configuration.tools`):
+```
+POST /api/agent_builder/agents
+{
+  "id": "<agent-id>",
+  "name": "...",
+  "configuration": {
+    "instructions": "...",
+    "tools": [{ "tool_ids": ["tool1"] }],
+    "skills": [{ "skill_ids": ["skill1", "skill2"] }]
+  }
+}
+```
+*(Verify `configuration.skills` shape against a GET response — mirror the pattern used for `configuration.tools`.)*
+
+### Spaces Support
+
+All skill endpoints support space-scoped paths:
+```
+/s/{space_id}/api/agent_builder/skills
+/s/{space_id}/api/agent_builder/skills/{skillId}
+```
+
+### Listing and Inspecting Skills
+
+```
+GET /api/agent_builder/skills                     — List all skills
+GET /api/agent_builder/skills?include_plugins=true — Include built-in plugin skills
+GET /api/agent_builder/skills/{skill_id}          — Get a specific skill by ID
 ```
 
 ---
@@ -819,6 +920,7 @@ POST /api/actions/connector
 30. **Prefer parameterized esql tools over `index_search` for logs** — `index_search` lets the LLM auto-generate ES|QL queries, which consistently fails: uses `message` instead of `body.text`, `FROM logs` instead of `FROM logs,logs.*`, `resource.attributes.service.name` instead of `service.name`, `MATCH()` instead of `LIKE`. Parameterized `esql` tools bake in correct field names and query patterns — the LLM only provides parameter values, eliminating 3-4 wasted tool calls per investigation
 29. **`elasticsearch.esql.query` step — preferred for text search in workflows** — Use `elasticsearch.esql.query` instead of `elasticsearch.search` when you need `match_phrase`, `sort`, or other schema-restricted features. Key patterns: (a) Use `FROM logs,logs.*` to include sub-streams. (b) Use `KQL()` function for text matching: `WHERE KQL("body.text: \"ErrorType\" AND severity_text: \"ERROR\"")`. (c) Output is `{columns: [{name, type}], values: [[row1], [row2]]}`. (d) Access values positionally: `steps.X.output.values[0][0]` for first row, first column. (e) Column order matches `KEEP` clause. (f) `format: json` is required in `with` block
 30. **Alert rule tags for workflow data passing** — Since `inputs.*` is blank in alert-triggered workflows, encode key data in alert rule tags. Example: `tags: ["nova7", "FuelPressureException"]` → access in workflow as `event.rule.tags[1]`. Keep tags minimal (prefix + error_type) for reliable array index access
+33. **Kibana Advanced Settings — use `/api/kibana/settings`, not `/internal/kibana/settings`** — Settings visible in Stack Management > Advanced Settings (e.g. `observability:streamsEnableSignificantEvents`, `aiAssistant:preferredChatExperience`) must be set via `POST /api/kibana/settings` with `{"changes": {"setting_key": value}}`. The `/internal/kibana/settings` endpoint exists but silently does not apply these user-facing settings — the change appears to succeed (HTTP 200) but the UI setting remains unchanged. Always use the public endpoint for Advanced Settings.
 
 ---
 
@@ -1039,6 +1141,106 @@ ac-action-row   (flex row containing all action buttons)
 - Cases: `/app/observability/cases?cases=(from:now-30d,page:1,perPage:10,sortField:createdAt,sortOrder:desc,to:now)`
 
 `window.KIBANA_URL` is injected by `_inject_theme()` via `KIBANA_URL_PLACEHOLDER` in `app/chaos_ui/static/index.html`, so it automatically respects `KIBANA_PROXY`. The ALERTS and CASES buttons always render regardless of whether `KIBANA_URL` is populated.
+
+---
+
+## Tool Naming Convention
+
+All Agent Builder tool IDs are **namespace-prefixed** using `scenario.prefixed_tool_id(base_id)` (defined in `scenarios/base.py`). This allows multiple scenarios to coexist in the same Agent Builder instance without ID collisions.
+
+```python
+def prefixed_tool_id(self, base_id: str) -> str:
+    p = f"{self.namespace}_"
+    if base_id.startswith(p):
+        return base_id
+    return f"{p}{base_id}"
+```
+
+**Examples (space scenario, namespace `nova7`):**
+
+| Base name | Prefixed ID |
+| --------- | ----------- |
+| `search_error_logs` | `nova7_search_error_logs` |
+| `remediation_action` | `nova7_remediation_action` |
+| `escalation_action` | `nova7_escalation_action` |
+| `launch_safety_assessment` | `nova7_launch_safety_assessment` |
+
+**CRITICAL: This convention must be applied consistently everywhere a tool name appears:**
+
+1. **Tool creation** (`deployer_agent.py` `_deploy_tools`) — workflow tools (`remediation_action`, `escalation_action`) must use `self.scenario.prefixed_tool_id(...)`, not bare string literals
+2. **Tool cleanup** (`_cleanup_agent`) — same, use `prefixed_tool_id()` not hardcoded strings
+3. **Scenario teardown** (`_teardown_scenario` → `_cleanup_agent`) — uses `prefixed_tool_id()` for each tool name; do NOT use a flat hardcoded set
+4. **Agent system prompt** — Tool Selection Guide and Remediation instructions must reference prefixed IDs so the LLM calls the correct tool name
+5. **Knowledge base documents** — Investigation Procedure and Remediation sections reference tool names; use `self.scenario.prefixed_tool_id(...)` inside the f-string
+
+**The `platform.core.cases` tool is a built-in — it is NOT prefixed and should never be passed through `prefixed_tool_id()`.**
+
+---
+
+## Teardown Safety Rules
+
+Teardown must delete **only** resources created for the scenario. The scenario's `namespace` (e.g. `nova7`) is the primary scoping mechanism.
+
+### Safe to delete (scenario-specific by design)
+
+| Resource | Mechanism | Risk |
+| -------- | --------- | ---- |
+| Elasticsearch indices | Exact names: `{ns}-knowledge-base`, `{ns}-significant-events-audit`, etc. | Very low |
+| AI agent | Exact ID: `{ns}-analyst` | Very low |
+| Tools | Exact prefixed IDs from `scenario.tool_definitions` + `prefixed_tool_id("remediation_action")` + `prefixed_tool_id("escalation_action")` | Very low |
+| Executive dashboard | Exact ID: `{ns}-exec-dashboard` | Very low |
+| Stream queries | ID prefix: `{ns}-se-` | Low |
+| APM ML jobs | Pattern: `apm-{ns}-*` | Very low |
+| SQLite records | Exact `deployment_id` | Very low |
+
+### Tag/name-based deletion (moderate risk)
+
+| Resource | Mechanism | Risk |
+| -------- | --------- | ---- |
+| Alert rules | Name contains `scenario_name` — deletes ALL rules whose name includes the scenario name | Moderate — user-created rules named to match will be deleted |
+| Cases | Tag parameter: `{"tags": ns}` — deletes ALL cases with that tag | Moderate — same risk |
+| Workflows | Name contains `scenario_name` OR name starts with `{ns}-` | Moderate — workflows manually named to match will be deleted |
+
+### Do NOT delete
+
+- **APM rollup data streams** (`metrics-transaction.1m.otel-*`, `metrics-service_destination.1m.otel-*`, `metrics-service_summary.1m.otel-*`) — not scenario-specific; shared across environments
+- **Generic data views** (`logs-*`, `metrics-hostmetricsreceiver.otel-*`) — no scenario name in their name; used by OTel dashboards generally
+
+### Scenario-named data views
+
+Three data views are created with `{scenario_name}` in their display name and should be deleted on teardown. Delete by their fixed IDs (URL-encode `*` as `%2A`):
+
+| ID | Display name | Delete? |
+| -- | ------------ | ------- |
+| `logs*` | `{scenario_name} Logs` | Yes |
+| `traces-*` | `{scenario_name} Traces` | Yes |
+| `metrics-*` | `{scenario_name} Metrics` | Yes |
+| `logs-*` | `logs-*` | No — generic OTel view |
+| `metrics-hostmetricsreceiver.otel-*` | `metrics-hostmetricsreceiver.otel-*` | No — generic OTel view |
+
+**Kibana data view delete API:**
+```
+DELETE /api/data_views/data_view/{id}
+```
+IDs containing `*` must be URL-encoded: `logs*` → `logs%2A`, `traces-*` → `traces-%2A`.
+Use `urllib.parse.quote(view_id, safe="")` in Python.
+
+### Teardown step index assignments (`teardown_with_progress`)
+
+| Index | Step |
+| ----- | ---- |
+| 0 | Stop generators |
+| 1 | Delete workflows |
+| 2 | Delete alert rules |
+| 3 | Delete significant events |
+| 4 | Delete AI agent & tools |
+| 5 | Delete knowledge base |
+| 6 | Delete audit indices |
+| 7 | Delete dashboard |
+| 8 | Delete APM ML jobs |
+| 9 | Delete SLOs |
+| 10 | Delete cases |
+| 11 | Delete data views |
 
 **CSS classes** (`app/chaos_ui/static/style.css`):
 

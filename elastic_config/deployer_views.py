@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import urllib.parse
+
 import httpx
 
 from elastic_config.deployer_base import _kibana_headers, ProgressCallback
@@ -81,3 +83,28 @@ class DataViewsMixin:
         step.status = "ok"
         step.detail = f"Created {created} data views"
         notify(self.progress)
+
+    def _cleanup_data_views(self, client: httpx.Client) -> int:
+        """Delete data views belonging to this scenario (matched by name prefix)."""
+        scenario_prefix = f"{self.scenario.scenario_name} "
+        deleted = 0
+        try:
+            resp = client.get(
+                f"{self.kibana_url}/api/data_views",
+                headers=_kibana_headers(self.api_key),
+            )
+            if resp.status_code < 300:
+                for view in resp.json().get("data_view", []):
+                    if view.get("name", "").startswith(scenario_prefix):
+                        view_id = view.get("id", "")
+                        if view_id:
+                            encoded_id = urllib.parse.quote(view_id, safe="")
+                            r = client.delete(
+                                f"{self.kibana_url}/api/data_views/data_view/{encoded_id}",
+                                headers=_kibana_headers(self.api_key),
+                            )
+                            if r.status_code < 300:
+                                deleted += 1
+        except Exception:
+            pass
+        return deleted

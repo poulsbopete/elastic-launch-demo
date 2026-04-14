@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Repo-root .env (not only cwd). Systemd/Uvicorn often start with a different
+# cwd where a bare load_dotenv() would miss ./.env.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Order: project .env, then service user's ~/.env, then cwd. override=False: first file wins per key.
+load_dotenv(_PROJECT_ROOT / ".env")
+load_dotenv(Path.home() / ".env")
+load_dotenv()  # cwd fallback for local dev
 
 # ── Environment Configuration ──────────────────────────────────────────────
 OTLP_ENDPOINT = os.getenv("OTLP_ENDPOINT", "")

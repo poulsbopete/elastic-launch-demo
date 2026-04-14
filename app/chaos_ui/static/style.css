@@ -455,8 +455,6 @@ body {
 
 .active-channel-card .ac-kibana-btn {
     background: transparent;
-    border: 1px solid var(--text-secondary);
-    color: var(--text-secondary);
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
     font-weight: 600;
@@ -468,12 +466,25 @@ body {
     text-decoration: none;
     display: inline-flex;
     align-items: center;
+    border: 1px solid;
 }
 
-.active-channel-card .ac-kibana-btn:hover {
-    background: rgba(136, 136, 136, 0.15);
-    border-color: var(--text-primary);
-    color: var(--text-primary);
+.active-channel-card .ac-kibana-btn.ac-btn-alerts {
+    border-color: var(--critical);
+    color: var(--critical);
+}
+
+.active-channel-card .ac-kibana-btn.ac-btn-alerts:hover {
+    background: rgba(255, 0, 0, 0.15);
+}
+
+.active-channel-card .ac-kibana-btn.ac-btn-cases {
+    border-color: #00bfb3;
+    color: #00bfb3;
+}
+
+.active-channel-card .ac-kibana-btn.ac-btn-cases:hover {
+    background: rgba(0, 191, 179, 0.15);
 }
 
 .ac-owner-tag {

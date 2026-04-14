@@ -115,7 +115,7 @@ class KbMixin:
 {description}
 
 ## Investigation Procedure
-1. Search for `{error_type}` in recent ERROR logs using `search_error_logs` — this identifier appears in the log body (body.text)
+1. Search for `{error_type}` in recent ERROR logs using `{self.scenario.prefixed_tool_id("search_error_logs")}` — this identifier appears in the log body (body.text)
 2. Check health of affected services: {affected}
 3. Trace anomaly propagation to cascade services: {cascade}
 4. Check for correlated errors in the same time window
@@ -126,5 +126,5 @@ class KbMixin:
 - Verify if errors correlate with infrastructure events
 
 ## Remediation
-When the user asks you to fix or remediate this issue, use remediation_action tool with action_type: {remediation_action}, channel: {ch_num}, and a justification. Once the tool returns successfully, report remediation as complete. Do NOT search for errors after remediation — the fix takes several minutes to propagate, so residual errors are expected immediately after.
+When the user asks you to fix or remediate this issue, use `{self.scenario.prefixed_tool_id("remediation_action")}` tool with action_type: {remediation_action}, channel: {ch_num}, and a justification. Once the tool returns successfully, report remediation as complete. Do NOT search for errors after remediation — the fix takes several minutes to propagate, so residual errors are expected immediately after.
 """

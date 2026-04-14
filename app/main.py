@@ -46,6 +46,14 @@ registry = InstanceRegistry()
 store = DeploymentStore()
 chaos_store = ChaosStore()
 
+
+def _purge_deployment_records(deployment_id: str) -> None:
+    """Drop deployment row and any persisted chaos channels for this id."""
+    store.delete(deployment_id)
+    chaos_store.delete_channels_for_deployment(deployment_id)
+    chaos_store.delete_spikes_for_deployment(deployment_id)
+
+
 # In-memory progress trackers keyed by deployment_id
 _deploy_progress: dict[str, dict] = {}
 _teardown_progress: dict[str, dict] = {}
@@ -347,14 +355,6 @@ async def landing_page(deployment_id: Optional[str] = None):
     return HTMLResponse(content=_inject_theme(html, deployment_id))
 
 
-@app.get("/slides", response_class=HTMLResponse)
-async def slides_page(deployment_id: Optional[str] = None):
-    path = os.path.join(_base, "landing", "static", "slides.html")
-    with open(path) as f:
-        html = f.read()
-    return HTMLResponse(content=_inject_theme(html, deployment_id))
-
-
 # ── Health ──────────────────────────────────────────────────────────────────
 
 
@@ -508,7 +508,7 @@ async def remove_deployment(deployment_id: str):
     inst = registry.remove(deployment_id)
     if inst:
         inst.stop()
-    store.delete(deployment_id)
+    _purge_deployment_records(deployment_id)
     return {"status": "removed", "deployment_id": deployment_id}
 
 
@@ -550,7 +550,8 @@ async def chaos_resolve(body: dict):
         return JSONResponse(status_code=404, content={"error": "No active deployment"})
     channel = int(body.get("channel", 0))
     session_id = body.get("session_id", "")
-    result = inst.chaos_controller.resolve(channel, session_id=session_id)
+    user_email = body.get("user_email", "")
+    result = inst.chaos_controller.resolve(channel, session_id=session_id, user_email=user_email)
     if result.get("error") == "session_mismatch":
         return JSONResponse(status_code=403, content=result)
     if inst.dashboard_ws:
@@ -600,12 +601,12 @@ async def chaos_channel_status(channel: int, deployment_id: Optional[str] = None
 
 
 @app.get("/api/chaos/session/validate")
-async def chaos_session_validate(session_id: str, deployment_id: Optional[str] = None):
-    """Check if a session_id owns any active channels."""
+async def chaos_session_validate(session_id: str, deployment_id: Optional[str] = None, user_email: str = ""):
+    """Check if a session_id (or user_email fallback) owns any active channels."""
     inst = _get_instance(deployment_id)
     if not inst:
         return {"valid": False, "channels": []}
-    channels = inst.chaos_controller.validate_session(session_id)
+    channels = inst.chaos_controller.validate_session(session_id, user_email=user_email)
     return {"valid": len(channels) > 0, "channels": channels}
 
 
@@ -1072,76 +1073,51 @@ async def stop_and_teardown(body: dict = {}):
 
     deployment_id = body.get("deployment_id") if body else None
 
-    if deployment_id:
-        # Stop specific deployment — remove from registry and stop generators synchronously
-        inst = registry.remove(deployment_id)
-        if inst:
-            try:
-                inst.stop()
-                logger.info(
-                    "Stopped deployment %s via stop-and-teardown", deployment_id
-                )
-            except Exception as exc:
-                logger.warning("Error stopping deployment %s: %s", deployment_id, exc)
+    if not deployment_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="deployment_id is required")
 
-            # Run teardown in background thread with progress
-            if inst.ctx.elastic_url and inst.ctx.elastic_api_key:
-                deployer = ScenarioDeployer(
-                    inst.ctx.scenario,
-                    inst.ctx.elastic_url,
-                    inst.ctx.kibana_url,
-                    inst.ctx.elastic_api_key,
-                )
+    # Stop specific deployment — remove from registry and stop generators synchronously
+    inst = registry.remove(deployment_id)
+    if inst:
+        try:
+            inst.stop()
+            logger.info(
+                "Stopped deployment %s via stop-and-teardown", deployment_id
+            )
+        except Exception as exc:
+            logger.warning("Error stopping deployment %s: %s", deployment_id, exc)
 
-                def _progress_cb(progress):
-                    _teardown_progress[deployment_id] = progress.to_dict()
+        # Run teardown in background thread with progress
+        if inst.ctx.elastic_url and inst.ctx.elastic_api_key:
+            deployer = ScenarioDeployer(
+                inst.ctx.scenario,
+                inst.ctx.elastic_url,
+                inst.ctx.kibana_url,
+                inst.ctx.elastic_api_key,
+            )
 
-                def _run_teardown():
-                    deployer.teardown_with_progress(callback=_progress_cb)
-                    store.delete(deployment_id)
+            def _progress_cb(progress):
+                _teardown_progress[deployment_id] = progress.to_dict()
 
-                _teardown_progress[deployment_id] = {
-                    "finished": False,
-                    "error": "",
-                    "steps": [],
-                }
-                thread = threading.Thread(target=_run_teardown, daemon=True)
-                thread.start()
+            def _run_teardown():
+                deployer.teardown_with_progress(callback=_progress_cb)
+                _purge_deployment_records(deployment_id)
 
-                return {"status": "stopping", "deployment_id": deployment_id}
-
-        store.delete(deployment_id)
-        # No credentials — mark as instantly done
-        _teardown_progress[deployment_id] = {"finished": True, "error": "", "steps": []}
-        return {"status": "stopping", "deployment_id": deployment_id}
-    else:
-        # Stop ALL deployments
-        registry.stop_all()
-        logger.info("All generators stopped via stop-and-teardown")
-
-        # Clean up ALL scenario artifacts using first available credentials
-        elastic_url, kibana_url, api_key = _get_default_creds()
-
-        if not elastic_url or not api_key:
-            return {
-                "ok": True,
-                "generators_stopped": True,
-                "artifacts_deleted": 0,
-                "note": "No Elastic credentials — generators stopped but no artifacts to clean",
+            _teardown_progress[deployment_id] = {
+                "finished": False,
+                "error": "",
+                "steps": [],
             }
+            thread = threading.Thread(target=_run_teardown, daemon=True)
+            thread.start()
 
-        result = ScenarioDeployer.cleanup_all(elastic_url, kibana_url, api_key)
+            return {"status": "stopping", "deployment_id": deployment_id}
 
-        # Clear all deployment records from store
-        for rec in store.get_all_active():
-            store.delete(rec["deployment_id"])
-
-        return {
-            "ok": result.get("ok", False),
-            "generators_stopped": True,
-            "artifacts_deleted": result.get("deleted", 0),
-            "error": result.get("error", ""),
-        }
+    _purge_deployment_records(deployment_id)
+    # No credentials — mark as instantly done
+    _teardown_progress[deployment_id] = {"finished": True, "error": "", "steps": []}
+    return {"status": "stopping", "deployment_id": deployment_id}
 
 
 @app.get("/api/setup/teardown-progress")

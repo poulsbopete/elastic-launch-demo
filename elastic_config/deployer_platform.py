@@ -18,14 +18,8 @@ class PlatformMixin:
         configured = []
         errors = []
 
-        # 1. Enable wired streams (always disable/re-enable to ensure clean state)
+        # 1. Enable wired streams (idempotent — safe to call if already enabled)
         try:
-            # Always cycle — ensures logs.otel is wired and UI reflects enabled state
-            client.post(
-                f"{self.kibana_url}/api/streams/_disable",
-                headers=_kibana_headers(self.api_key),
-                json={},
-            )
             resp = client.post(
                 f"{self.kibana_url}/api/streams/_enable",
                 headers=_kibana_headers(self.api_key),
@@ -39,16 +33,27 @@ class PlatformMixin:
             errors.append(f"wired streams ({exc})")
 
         # 2. Enable significant events
+        # Use the public /api/kibana/settings endpoint (same one the Advanced Settings UI
+        # uses) rather than /internal/kibana/settings, which does not apply this setting.
         try:
             resp = client.post(
-                f"{self.kibana_url}/internal/kibana/settings",
+                f"{self.kibana_url}/api/kibana/settings",
                 headers=_kibana_headers(self.api_key),
                 json={"changes": {"observability:streamsEnableSignificantEvents": True}},
             )
             if resp.status_code < 300:
                 configured.append("significant events")
             else:
-                errors.append(f"significant events (HTTP {resp.status_code})")
+                # Fallback to internal API in case the public one isn't available
+                resp2 = client.post(
+                    f"{self.kibana_url}/internal/kibana/settings",
+                    headers=_kibana_headers(self.api_key),
+                    json={"changes": {"observability:streamsEnableSignificantEvents": True}},
+                )
+                if resp2.status_code < 300:
+                    configured.append("significant events")
+                else:
+                    errors.append(f"significant events (HTTP {resp.status_code}/{resp2.status_code})")
         except Exception as exc:
             errors.append(f"significant events ({exc})")
 

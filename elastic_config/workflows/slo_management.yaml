@@ -40,7 +40,7 @@ steps:
     steps:
       - name: check_SLOs
         type: if
-        condition: "foreach.item.name : *Error Rate SLO* OR foreach.item.name : *Latency SLO* OR foreach.item.name : *Availability SLO*"
+        condition: "foreach.item.name : \"__SCENARIO_NAME__*\""
         steps:
           - name: print-results
             type: console
@@ -67,7 +67,7 @@ steps:
       method: POST
       path: /api/observability/slos
       body:
-        name: Availability SLO
+        name: "__SCENARIO_NAME__: Availability SLO"
         description: Service availability - 95% target, grouped by service name
         indicator:
           type: sli.kql.custom
@@ -97,7 +97,7 @@ steps:
       method: POST
       path: /api/observability/slos
       body:
-        name: Latency SLO
+        name: "__SCENARIO_NAME__: Latency SLO"
         description: Service latency - 85% of requests under 2s, grouped by service name
         indicator:
           type: sli.kql.custom
@@ -127,7 +127,7 @@ steps:
       method: POST
       path: /api/observability/slos
       body:
-        name: Error Rate SLO
+        name: "__SCENARIO_NAME__: Error Rate SLO"
         description: Service error rate - less than 5% errors, grouped by service name
         indicator:
           type: sli.kql.custom
