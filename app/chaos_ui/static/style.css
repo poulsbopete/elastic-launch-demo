@@ -531,7 +531,7 @@ body {
 
 .spike-control {
     background: var(--bg-card);
-    border: 1px solid var(--border);
+    border: 1px solid var(--text-secondary);
     border-radius: 6px;
     padding: 16px;
     transition: border-color 0.3s, box-shadow 0.3s;
@@ -578,6 +578,7 @@ body {
     border-radius: 2px;
     outline: none;
     cursor: pointer;
+    box-shadow: 0 0 0 1px var(--text-secondary);
 }
 
 .spike-slider::-webkit-slider-thumb {
@@ -587,7 +588,7 @@ body {
     height: 16px;
     border-radius: 50%;
     background: var(--text-secondary);
-    border: 2px solid var(--bg-card);
+    border: 2px solid var(--text-secondary);
     cursor: pointer;
     transition: background 0.2s, box-shadow 0.2s;
 }
@@ -597,18 +598,28 @@ body {
     height: 16px;
     border-radius: 50%;
     background: var(--text-secondary);
-    border: 2px solid var(--bg-card);
+    border: 2px solid var(--text-secondary);
     cursor: pointer;
     transition: background 0.2s, box-shadow 0.2s;
 }
 
+.spike-control.active .spike-label {
+    color: var(--caution);
+}
+
+.spike-control.active .spike-slider {
+    box-shadow: 0 0 0 1px var(--caution);
+}
+
 .spike-control.active .spike-slider::-webkit-slider-thumb {
     background: var(--caution);
+    border-color: var(--caution);
     box-shadow: 0 0 8px rgba(255, 140, 0, 0.5);
 }
 
 .spike-control.active .spike-slider::-moz-range-thumb {
     background: var(--caution);
+    border-color: var(--caution);
     box-shadow: 0 0 8px rgba(255, 140, 0, 0.5);
 }
 
