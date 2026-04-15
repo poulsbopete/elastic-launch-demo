@@ -30,21 +30,27 @@ class AlertingMixin:
         step.status = "running"
         notify(self.progress)
 
-        # Find notification workflow ID
-        notification_wf_id = ""
-        for name_frag, wf_id in self._workflow_ids.items():
-            if "notification" in name_frag or "significant" in name_frag:
-                notification_wf_id = wf_id
-                break
+        # Find HITL notification workflow ID
+        notification_wf_id = self._workflow_ids.get("significant_event_notification", "")
+        auto_remediate_wf_id = self._workflow_ids.get("significant_event_notification_auto_remediate", "")
 
-        if not notification_wf_id:
-            # Search for it
+        if not notification_wf_id or not auto_remediate_wf_id:
+            # Search for missing IDs
             try:
                 items = self._wf_search(client)
                 for item in items:
-                    if "Notification" in item.get("name", "") or "Significant" in item.get("name", ""):
-                        notification_wf_id = item["id"]
-                        break
+                    wf_name = item.get("name", "")
+                    wf_id = item.get("id", "")
+                    if not wf_id:
+                        continue
+                    if not notification_wf_id and "Auto-Remediate" not in wf_name and (
+                        "Notification" in wf_name or "Significant" in wf_name
+                    ):
+                        notification_wf_id = wf_id
+                    elif not auto_remediate_wf_id and "Auto-Remediate" in wf_name and (
+                        "Notification" in wf_name or "Significant" in wf_name
+                    ):
+                        auto_remediate_wf_id = wf_id
             except Exception:
                 pass
 
@@ -53,6 +59,9 @@ class AlertingMixin:
             step.detail = "Notification workflow not found"
             notify(self.progress)
             return
+
+        if not auto_remediate_wf_id:
+            logger.warning("Auto-remediate workflow not found; channels 16-20 will use HITL workflow")
 
         # Clean old rules
         self._cleanup_alerts(client)
@@ -76,7 +85,12 @@ class AlertingMixin:
             else:
                 severity = "medium"
 
-            rule_name = f"{self.scenario.scenario_name} CH{num_str}: {name}"
+            # Channels 16-20 use auto-remediation; 1-15 remain HITL
+            auto_remediate = ch_int >= 16
+            if auto_remediate:
+                rule_name = f"{self.scenario.scenario_name} CH{num_str}: {name} (Auto-Remediate)"
+            else:
+                rule_name = f"{self.scenario.scenario_name} CH{num_str}: {name}"
 
             es_query = json.dumps({
                 "query": {
@@ -94,7 +108,14 @@ class AlertingMixin:
                 "name": rule_name,
                 "rule_type_id": ".es-query",
                 "consumer": "alerts",
-                "tags": [self.ns, error_type],
+                # For auto-remediate channels, encode action_type (tags[2]) and channel
+                # number (tags[3]) in tags — workflow inputs from alert actions resolve blank,
+                # so all per-channel data needed by the workflow must live in tags.
+                "tags": (
+                    [self.ns, error_type, ch_data.get("remediation_action", ""), str(ch_int)]
+                    if auto_remediate
+                    else [self.ns, error_type]
+                ),
                 "schedule": {"interval": "1m"},
                 "params": {
                     "searchType": "esQuery",
@@ -118,7 +139,7 @@ class AlertingMixin:
                     "params": {
                         "subAction": "run",
                         "subActionParams": {
-                            "workflowId": notification_wf_id,
+                            "workflowId": (auto_remediate_wf_id or notification_wf_id) if auto_remediate else notification_wf_id,
                             "inputs": {
                                 "channel": ch_int,
                                 "error_type": error_type,

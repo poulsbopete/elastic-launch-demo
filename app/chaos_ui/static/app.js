@@ -135,7 +135,8 @@
         for (const id of sortedIds) {
             const opt = document.createElement('option');
             opt.value = id;
-            opt.textContent = `CH-${String(id).padStart(2, '0')}: ${data[id].name}`;
+            const modeLabel = id >= 16 ? ' (Auto-Remediate)' : ' (HITL)';
+            opt.textContent = `CH-${String(id).padStart(2, '0')}: ${data[id].name}${modeLabel}`;
             select.appendChild(opt);
         }
     }
@@ -298,14 +299,16 @@
         if (activeIds.length === 0) {
             container.innerHTML = '<div class="no-active">No active faults</div>';
         } else {
-            const MAX_DURATION = 3600; // 1 hour, matches backend
+            const MAX_DURATION = window.CHANNEL_TIMEOUT || 3600;
             container.innerHTML = activeIds.map(id => {
                 const ch = data[id];
                 const elapsed = ch.triggered_at ? Math.round((Date.now() / 1000) - ch.triggered_at) : 0;
-                const mins = Math.floor(elapsed / 60);
+                const hrs = Math.floor(elapsed / 3600);
+                const mins = Math.floor((elapsed % 3600) / 60);
                 const secs = elapsed % 60;
                 const remaining = Math.max(0, MAX_DURATION - elapsed);
-                const remMins = Math.floor(remaining / 60);
+                const remHrs = Math.floor(remaining / 3600);
+                const remMins = Math.floor((remaining % 3600) / 60);
                 const remSecs = remaining % 60;
                 const isMine = (sid && ch.session_id === sid) || (myEmail && ch.user_email && ch.user_email === myEmail);
                 const ownerTag = !isMine && ch.session_id
@@ -323,11 +326,11 @@
                     <div class="active-channel-card">
                         <div class="ac-header">
                             <span class="ac-channel">CH-${String(id).padStart(2, '0')}</span>
-                            <span class="ac-time">${mins}m ${secs}s ago</span>
+                            <span class="ac-time">${hrs}h ${mins}m ${secs}s ago</span>
                         </div>
                         <div class="ac-name">${ch.name}</div>
                         <div class="ac-subsystem">${ch.subsystem} | ${(ch.affected_services || []).join(', ')}</div>
-                        <div class="ac-expiry">Auto-expires in ${remMins}m ${remSecs}s</div>
+                        <div class="ac-expiry">Auto-expires in ${remHrs}h ${remMins}m ${remSecs}s</div>
                         ${ownerTag}
                         <div class="ac-action-row">${resolveBtn}${kibanaLinks}</div>
                     </div>

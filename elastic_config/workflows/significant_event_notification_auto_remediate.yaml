@@ -1,14 +1,22 @@
 version: "1"
-name: __SCENARIO_NAME__ Significant Event Notification (Human in the Loop)
+name: __SCENARIO_NAME__ Significant Event Notification (Auto-Remediate)
 description: >
-  Notify launch operations team when a significant event is detected.
+  Notify launch operations team and automatically execute remediation when a
+  significant event is detected on an auto-remediation channel (16-20).
   Triggered by alert rules — uses event.rule.tags[1] for the error_type
   search, extracts user_email from event_name, sends email notification
-  immediately, then runs AI root cause analysis and creates a case with
-  RCA findings.
+  immediately, runs AI root cause analysis, creates a case, then automatically
+  queues remediation and closes the case.
 
 triggers:
   - type: alert
+
+# NOTE: workflow inputs passed via subActionParams.inputs from alert rules resolve blank.
+# Channel-specific data is encoded in alert rule tags instead:
+#   tags[0] = namespace
+#   tags[1] = error_type
+#   tags[2] = action_type (remediation_action for this channel)
+#   tags[3] = channel number (as string)
 
 steps:
   - name: enrich_context
@@ -48,9 +56,11 @@ steps:
         Error Type: {{ event.rule.tags[1] }}
         Total errors (15m): {{ steps.count_errors.output.values[0][0] }}
 
-        An AI root cause analysis is underway — a case with detailed findings will be created shortly.
+        An AI root cause analysis is underway and automated remediation will
+        execute immediately after. A case with detailed findings will be
+        created and closed automatically.
 
-        Open Kibana to investigate and request remediation:
+        Open Kibana to review:
         __KIBANA_URL__/app/dashboards#/view/__NS__-exec-dashboard
 
   - name: run_rca
@@ -62,9 +72,10 @@ steps:
         Significant event detected: {{ event.rule.name }}.
         Error type: {{ event.rule.tags[1] }}.
         Total errors in last 15 minutes: {{ steps.count_errors.output.values[0][0] }}.
-        Perform a root cause analysis only. Search logs for this error type,
+        Perform a root cause analysis. Search logs for this error type,
         identify affected services, trace the fault propagation, and provide
-        your structured RCA report. Do NOT execute any remediation actions.
+        your structured RCA report. Note: automated remediation will execute
+        immediately after your analysis completes.
 
   - name: create_case
     type: kibana.createCaseDefaultSpace
@@ -87,6 +98,55 @@ steps:
         type: ".none"
         fields: null
 
+  - name: queue_remediation
+    type: elasticsearch.index
+    with:
+      index: "__NS__-remediation-queue"
+      document:
+        channel: "{{ event.rule.tags[3] }}"
+        action_type: "{{ event.rule.tags[2] }}"
+        target_service: ""
+        justification: "Automated remediation triggered by alert rule"
+        dry_run: false
+        error_type: "{{ event.rule.tags[1] }}"
+        namespace: "__NS__"
+        status: "pending"
+        mission_id: "__SCENARIO_NAME__"
+      refresh: wait_for
+
+  - name: add_remediation_comment
+    type: kibana.request
+    with:
+      method: POST
+      path: "/api/cases/{{ steps.create_case.output.id }}/comments"
+      headers:
+        kbn-xsrf: "true"
+      body:
+        type: "user"
+        comment: |
+          ## Auto-Remediation Triggered
+
+          - **Action:** {{ event.rule.tags[2] }}
+          - **Error Type:** {{ event.rule.tags[1] }}
+          - **Channel:** {{ event.rule.tags[3] }}
+          - **Dry Run:** false
+          - **Justification:** Automated remediation triggered by alert rule
+        owner: "observability"
+
+  - name: refetch_case
+    type: kibana.request
+    with:
+      method: GET
+      path: "/api/cases/{{ steps.create_case.output.id }}"
+
+  - name: close_case
+    type: kibana.updateCase
+    with:
+      cases:
+        - id: "{{ steps.refetch_case.output.id }}"
+          version: "{{ steps.refetch_case.output.version }}"
+          status: "closed"
+
   - name: audit_log
     type: elasticsearch.index
     with:
@@ -96,5 +156,6 @@ steps:
         error_type: "{{ event.rule.tags[1] }}"
         total_errors: "{{ steps.count_errors.output.values[0][0] }}"
         rca_case_created: true
+        auto_remediated: true
         mission_id: "__SCENARIO_NAME__"
       refresh: wait_for

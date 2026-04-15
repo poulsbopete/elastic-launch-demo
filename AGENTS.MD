@@ -873,6 +873,45 @@ No need to create a webhook connector — the system connector ID is `system-con
 - Alert context is available via `event.*` namespace: `event.rule.name`, `event.rule.tags[N]`, `event.alerts[0].kibana.alert.*`, `event.spaceId`
 - Encode key data in alert rule `tags` for easy workflow access: `tags: ["nova7", "FuelPressureException"]` → `{{ event.rule.tags[1] }}`
 
+### HITL vs Auto-Remediate: Two-Workflow Pattern
+
+Channels 1-15 use a HITL workflow; channels 16-20 use an auto-remediate workflow. Two separate
+workflow YAML files are deployed; the deployer routes each alert rule to the correct workflow.
+
+**Tag encoding convention** (since inputs are blank, all per-channel data goes in tags):
+```
+tags[0] = namespace          (e.g. "nova7")
+tags[1] = error_type         (e.g. "RSO-TRACKING-LOSS")
+tags[2] = remediation_action (auto-remediate channels only, e.g. "reset_safety_system")
+tags[3] = channel number     (auto-remediate channels only, e.g. "20")
+```
+
+**Alert rule naming:**
+
+- HITL (CH01–CH15): `"{scenario_name} CH{nn}: {channel_name}"`
+- Auto-Remediate (CH16–CH20): `"{scenario_name} CH{nn}: {channel_name} (Auto-Remediate)"`
+
+**Case title** for auto-remediate: `"{{ event.rule.name }}"` (not the `"__SCENARIO_NAME__ RCA: ..."` pattern used by HITL). Since the rule name already contains "(Auto-Remediate)", the case title inherits it automatically.
+
+**Workflow file naming and deployer lookup** (`elastic_config/deployer_alerting.py`):
+
+```python
+# Exact key names match filenames (without .yaml):
+notification_wf_id    = self._workflow_ids.get("significant_event_notification", "")
+auto_remediate_wf_id  = self._workflow_ids.get("significant_event_notification_auto_remediate", "")
+```
+
+Do NOT use a fuzzy "notification in name" search — both workflow names contain "Notification".
+When falling back to `_wf_search`, distinguish by presence/absence of "Auto-Remediate" in the name.
+
+**Auto-remediate workflow steps** (after `create_case`):
+
+1. `queue_remediation` — index to `__NS__-remediation-queue` with `dry_run: false`, `status: "pending"`, `channel: "{{ event.rule.tags[3] }}"`, `action_type: "{{ event.rule.tags[2] }}"`
+2. `add_remediation_comment` — POST comment to `steps.create_case.output.id`
+3. `refetch_case` + `close_case` — GET case for current `version`, then `kibana.updateCase` to `"closed"`
+
+The `RemediationPoller` (`app/chaos/remediation_poller.py`) picks up pending queue entries and calls `chaos_controller.resolve(channel, force=True)` — no changes needed there.
+
 ### Webhook Connector (Legacy)
 ```
 POST /api/actions/connector
@@ -912,14 +951,16 @@ POST /api/actions/connector
 22. **Alert-triggered workflows use `event.*` namespace** — When a workflow has `type: alert` trigger and is invoked by the `.workflows` system connector, the alert context is available via the `event.*` namespace: `event.rule.name`, `event.rule.tags[0]`, `event.rule.tags[1]`, `event.alerts[0].kibana.alert.*`, `event.spaceId`. This is NOT `inputs.*` — the `event.*` namespace is the raw alert context document
 23. **`inputs.*` from alert connector resolves BLANK everywhere** — When an alert rule fires a workflow via the `.workflows` connector with `subActionParams.inputs`, those inputs resolve to **empty strings** in ALL workflow step contexts: `elasticsearch.search` query fields, `console` messages, `email` subject/message/to, `http` body, etc. Do NOT rely on `inputs.*` in alert-triggered workflows. Use `event.*` namespace instead (e.g., `event.rule.tags[1]` for error type, `event.rule.name` for rule name)
 24. **Having an `inputs:` schema may block alert context** — If an alert-triggered workflow defines an `inputs:` schema, it may filter/block the raw alert context document. For workflows that only need alert context (not manual inputs), remove the `inputs:` block entirely and use only `event.*` for all data access
+25. **Static JS cache-busting** — The chaos UI `index.html` references `app.js` with a `?v=N` query param (e.g. `<script src="/chaos/static/app.js?v=3">`). Browsers cache this aggressively. Whenever `app.js` is modified, bump the version number in `index.html` so users get the updated file without needing a hard refresh
+26. **Case teardown uses namespace tag, not title** — `_cleanup_cases` in `deployer.py` deletes cases by querying `tags: ns` (the namespace tag e.g. `"nova7"`), not by matching the case title. Case title changes (e.g. removing the `RCA:` prefix) do not affect teardown correctness as long as the `"__NS__"` tag is still included in the workflow's `create_case` step
 25. **Workflow `if` conditions use KQL dot paths, NOT `{{ }}` templates** — The `condition` field in workflow steps uses KQL syntax with literal dot paths as field names. **CORRECT:** `condition: "inputs.severity : critical"`. **WRONG:** `condition: "{{ inputs.severity }} : critical"` (template substitution replaces the value, then KQL interprets the value as a field name → always false). For array access in conditions, use `.0.` instead of `[0]`: `condition: "steps.set_data.output.var.0.email : *@*"`
 26. **`elasticsearch.search` schema — `aggs`, `_source`, `sort`, `exists`, `match_phrase` all NOT allowed** — The workflow schema for `elasticsearch.search` steps only allows `index`, `size`, and `query` with basic query types (`match`, `term`, `range`, `bool`). Including `sort` → `Valid: false`. Including `match_phrase` → `Valid: false` (shows as "Untitled workflow"). Including `aggs` → validation warnings. Including `_source` → rejected. Including `exists` query → `Valid: false`. **Preferred workaround:** Use `elasticsearch.esql.query` with `KQL()` function instead — e.g. `FROM logs,logs.* | WHERE KQL("body.text: \"ErrorType\" AND severity_text: \"ERROR\"") | KEEP event_name`. For counts: `| STATS total = COUNT(*)`. Output format: `{columns: [...], values: [[...]]}` — access via `steps.X.output.values[row][col]`
 27. **`Elastic-Cloud-SMTP` system email connector** — Pre-configured email connector on Elastic Cloud serverless. Use `connector-id: Elastic-Cloud-SMTP` in email steps. Sends from `noreply@alerts.elastic.co`. Returns `{accepted: [...], rejected: [...], response: "250 2.0.0 Ok: queued"}`
 28. **Extracting callback_url from log `event_name`** — `event_name` is a top-level indexed `keyword` field (NOT a passthrough attribute). It contains a JSON string like `{"callback_url": "http://...", "user_email": "user@example.com"}`. Extract using ES|QL: `FROM logs,logs.* | WHERE KQL("body.text: \"ErrorType\"...") | KEEP event_name` → then `data.set` with `json_parse`: `${{ steps.search.output.values[1][0] | json_parse }}`. Access parsed fields via `steps.set_step.output.var[0].event_meta.callback_url`
 29. **Parameterized ES|QL tools — `?param` syntax** — Agent Builder `esql` tools support named parameters using ES|QL's native `?param_name` (for values) and `??param_name` (for identifiers/field names). Define params in `configuration.params` with `{description, type, optional}`. The Agent Builder auto-generates a JSON Schema from params for the LLM. **CRITICAL:** `CONCAT("*", ?param, "*")` does NOT pass validation — use `LIKE ?param` and instruct the LLM in the param description to include wildcards (e.g., `"Wrap in asterisks: *FuelPressureException*"`). `== ?param` works for exact string matching. Refs: https://www.elastic.co/docs/reference/query-languages/esql/esql-rest#esql-rest-params , https://github.com/elastic/elasticsearch/pull/122459
 30. **Prefer parameterized esql tools over `index_search` for logs** — `index_search` lets the LLM auto-generate ES|QL queries, which consistently fails: uses `message` instead of `body.text`, `FROM logs` instead of `FROM logs,logs.*`, `resource.attributes.service.name` instead of `service.name`, `MATCH()` instead of `LIKE`. Parameterized `esql` tools bake in correct field names and query patterns — the LLM only provides parameter values, eliminating 3-4 wasted tool calls per investigation
-29. **`elasticsearch.esql.query` step — preferred for text search in workflows** — Use `elasticsearch.esql.query` instead of `elasticsearch.search` when you need `match_phrase`, `sort`, or other schema-restricted features. Key patterns: (a) Use `FROM logs,logs.*` to include sub-streams. (b) Use `KQL()` function for text matching: `WHERE KQL("body.text: \"ErrorType\" AND severity_text: \"ERROR\"")`. (c) Output is `{columns: [{name, type}], values: [[row1], [row2]]}`. (d) Access values positionally: `steps.X.output.values[0][0]` for first row, first column. (e) Column order matches `KEEP` clause. (f) `format: json` is required in `with` block
-30. **Alert rule tags for workflow data passing** — Since `inputs.*` is blank in alert-triggered workflows, encode key data in alert rule tags. Example: `tags: ["nova7", "FuelPressureException"]` → access in workflow as `event.rule.tags[1]`. Keep tags minimal (prefix + error_type) for reliable array index access
+31. **`elasticsearch.esql.query` step — preferred for text search in workflows** — Use `elasticsearch.esql.query` instead of `elasticsearch.search` when you need `match_phrase`, `sort`, or other schema-restricted features. Key patterns: (a) Use `FROM logs,logs.*` to include sub-streams. (b) Use `KQL()` function for text matching: `WHERE KQL("body.text: \"ErrorType\" AND severity_text: \"ERROR\"")`. (c) Output is `{columns: [{name, type}], values: [[row1], [row2]]}`. (d) Access values positionally: `steps.X.output.values[0][0]` for first row, first column. (e) Column order matches `KEEP` clause. (f) `format: json` is required in `with` block
+32. **Alert rule tags for workflow data passing** — Since `inputs.*` is blank in alert-triggered workflows, encode key data in alert rule tags. Example: `tags: ["nova7", "FuelPressureException"]` → access in workflow as `event.rule.tags[1]`. Keep tags minimal (prefix + error_type) for reliable array index access
 33. **Kibana Advanced Settings — use `/api/kibana/settings`, not `/internal/kibana/settings`** — Settings visible in Stack Management > Advanced Settings (e.g. `observability:streamsEnableSignificantEvents`, `aiAssistant:preferredChatExperience`) must be set via `POST /api/kibana/settings` with `{"changes": {"setting_key": value}}`. The `/internal/kibana/settings` endpoint exists but silently does not apply these user-facing settings — the change appears to succeed (HTTP 200) but the UI setting remains unchanged. Always use the public endpoint for Advanced Settings.
 
 ---
@@ -1049,18 +1090,15 @@ The selector UI (`/`) adapts based on whether credentials are pre-configured:
 
 ### Selector UI — Deployment Action Buttons
 
-Each active deployment in the selector UI (`app/selector/static/index.html`) shows a row of action buttons/links built from `d.*` fields returned by `/api/deployments`:
+Each active deployment in the selector UI (`app/selector/static/index.html`) shows a row of action buttons/links:
 
 | Button | Color | URL / Action |
 | ------ | ----- | ------------ |
-| Platform Overview | neutral (`--bg-input`) | `/slides?deployment_id=...` |
-| Landing | neutral | `/home?deployment_id=...` |
-| Dashboard | neutral | `/dashboard?deployment_id=...` |
 | Executive Dashboard | teal (`--teal`, black text) | `{d.kibana_display_url}/app/dashboards#/view/{d.namespace}-exec-dashboard` (new tab) |
 | Chaos | amber (`--amber`, black text) | `/chaos?deployment_id=...` |
 | Stop & Teardown | red (`--red`, white text) | JS `stopAndTeardown()` |
 
-**Executive Dashboard link** uses `d.kibana_display_url` (from `/api/deployments`), which is `KIBANA_PROXY or kibana_url`. This is the same URL pattern used by the slides page "Launch Demo" button (`KIBANA_URL_PLACEHOLDER/app/dashboards#/view/NAMESPACE_PLACEHOLDER-exec-dashboard`).
+**Executive Dashboard link** uses `d.kibana_display_url` (from `/api/deployments`), which is `KIBANA_PROXY or kibana_url`.
 
 ### Kibana Proxy for User-Facing Links (`KIBANA_PROXY`)
 
@@ -1141,6 +1179,29 @@ ac-action-row   (flex row containing all action buttons)
 - Cases: `/app/observability/cases?cases=(from:now-30d,page:1,perPage:10,sortField:createdAt,sortOrder:desc,to:now)`
 
 `window.KIBANA_URL` is injected by `_inject_theme()` via `KIBANA_URL_PLACEHOLDER` in `app/chaos_ui/static/index.html`, so it automatically respects `KIBANA_PROXY`. The ALERTS and CASES buttons always render regardless of whether `KIBANA_URL` is populated.
+
+### Chaos UI — Channel Auto-Expiry & Timeout
+
+Active fault channels auto-resolve after `MAX_FAULT_DURATION` seconds. The timeout is configurable via the `CHANNEL_TIMEOUT` environment variable (default: `3600` = 1 hour).
+
+**Backend (`app/chaos/controller.py`):**
+
+- `MAX_FAULT_DURATION = CHANNEL_TIMEOUT` (read from `app/config.py` at import time)
+- `_expire_stale()` is called lazily (no background thread) — expiry is checked on every call to `is_active()`, `get_status()`, or `validate_session()`
+- Expired channels are persisted to SQLite via `store.expire_channels()`
+
+**Frontend (`app/chaos_ui/static/app.js` → `updateActiveChannels()`):**
+
+- `MAX_DURATION = window.CHANNEL_TIMEOUT || 3600` — drives the "Auto-expires in Xh Xm Xs" countdown and the elapsed time display ("Xh Xm Xs ago")
+- Elapsed and remaining times always display hours, minutes, and seconds (e.g. `0h 5m 30s`)
+
+**Injection pipeline:**
+
+- `app/config.py` — `CHANNEL_TIMEOUT = int(os.getenv("CHANNEL_TIMEOUT", "3600"))`
+- `app/main.py` — `_inject_theme()` adds `"CHANNEL_TIMEOUT_PLACEHOLDER": str(CHANNEL_TIMEOUT)` to its replacements dict
+- `app/chaos_ui/static/index.html` — `window.CHANNEL_TIMEOUT = CHANNEL_TIMEOUT_PLACEHOLDER;` (replaced at serve time)
+
+**Setting the timeout:** Add `CHANNEL_TIMEOUT=<seconds>` to `.env`. A restart is required for the new value to take effect.
 
 ---
 
