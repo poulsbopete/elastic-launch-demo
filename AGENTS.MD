@@ -951,6 +951,8 @@ POST /api/actions/connector
 22. **Alert-triggered workflows use `event.*` namespace** — When a workflow has `type: alert` trigger and is invoked by the `.workflows` system connector, the alert context is available via the `event.*` namespace: `event.rule.name`, `event.rule.tags[0]`, `event.rule.tags[1]`, `event.alerts[0].kibana.alert.*`, `event.spaceId`. This is NOT `inputs.*` — the `event.*` namespace is the raw alert context document
 23. **`inputs.*` from alert connector resolves BLANK everywhere** — When an alert rule fires a workflow via the `.workflows` connector with `subActionParams.inputs`, those inputs resolve to **empty strings** in ALL workflow step contexts: `elasticsearch.search` query fields, `console` messages, `email` subject/message/to, `http` body, etc. Do NOT rely on `inputs.*` in alert-triggered workflows. Use `event.*` namespace instead (e.g., `event.rule.tags[1]` for error type, `event.rule.name` for rule name)
 24. **Having an `inputs:` schema may block alert context** — If an alert-triggered workflow defines an `inputs:` schema, it may filter/block the raw alert context document. For workflows that only need alert context (not manual inputs), remove the `inputs:` block entirely and use only `event.*` for all data access
+25. **Static JS cache-busting** — The chaos UI `index.html` references `app.js` with a `?v=N` query param (e.g. `<script src="/chaos/static/app.js?v=3">`). Browsers cache this aggressively. Whenever `app.js` is modified, bump the version number in `index.html` so users get the updated file without needing a hard refresh
+26. **Case teardown uses namespace tag, not title** — `_cleanup_cases` in `deployer.py` deletes cases by querying `tags: ns` (the namespace tag e.g. `"nova7"`), not by matching the case title. Case title changes (e.g. removing the `RCA:` prefix) do not affect teardown correctness as long as the `"__NS__"` tag is still included in the workflow's `create_case` step
 25. **Workflow `if` conditions use KQL dot paths, NOT `{{ }}` templates** — The `condition` field in workflow steps uses KQL syntax with literal dot paths as field names. **CORRECT:** `condition: "inputs.severity : critical"`. **WRONG:** `condition: "{{ inputs.severity }} : critical"` (template substitution replaces the value, then KQL interprets the value as a field name → always false). For array access in conditions, use `.0.` instead of `[0]`: `condition: "steps.set_data.output.var.0.email : *@*"`
 26. **`elasticsearch.search` schema — `aggs`, `_source`, `sort`, `exists`, `match_phrase` all NOT allowed** — The workflow schema for `elasticsearch.search` steps only allows `index`, `size`, and `query` with basic query types (`match`, `term`, `range`, `bool`). Including `sort` → `Valid: false`. Including `match_phrase` → `Valid: false` (shows as "Untitled workflow"). Including `aggs` → validation warnings. Including `_source` → rejected. Including `exists` query → `Valid: false`. **Preferred workaround:** Use `elasticsearch.esql.query` with `KQL()` function instead — e.g. `FROM logs,logs.* | WHERE KQL("body.text: \"ErrorType\" AND severity_text: \"ERROR\"") | KEEP event_name`. For counts: `| STATS total = COUNT(*)`. Output format: `{columns: [...], values: [[...]]}` — access via `steps.X.output.values[row][col]`
 27. **`Elastic-Cloud-SMTP` system email connector** — Pre-configured email connector on Elastic Cloud serverless. Use `connector-id: Elastic-Cloud-SMTP` in email steps. Sends from `noreply@alerts.elastic.co`. Returns `{accepted: [...], rejected: [...], response: "250 2.0.0 Ok: queued"}`
@@ -1177,6 +1179,29 @@ ac-action-row   (flex row containing all action buttons)
 - Cases: `/app/observability/cases?cases=(from:now-30d,page:1,perPage:10,sortField:createdAt,sortOrder:desc,to:now)`
 
 `window.KIBANA_URL` is injected by `_inject_theme()` via `KIBANA_URL_PLACEHOLDER` in `app/chaos_ui/static/index.html`, so it automatically respects `KIBANA_PROXY`. The ALERTS and CASES buttons always render regardless of whether `KIBANA_URL` is populated.
+
+### Chaos UI — Channel Auto-Expiry & Timeout
+
+Active fault channels auto-resolve after `MAX_FAULT_DURATION` seconds. The timeout is configurable via the `CHANNEL_TIMEOUT` environment variable (default: `3600` = 1 hour).
+
+**Backend (`app/chaos/controller.py`):**
+
+- `MAX_FAULT_DURATION = CHANNEL_TIMEOUT` (read from `app/config.py` at import time)
+- `_expire_stale()` is called lazily (no background thread) — expiry is checked on every call to `is_active()`, `get_status()`, or `validate_session()`
+- Expired channels are persisted to SQLite via `store.expire_channels()`
+
+**Frontend (`app/chaos_ui/static/app.js` → `updateActiveChannels()`):**
+
+- `MAX_DURATION = window.CHANNEL_TIMEOUT || 3600` — drives the "Auto-expires in Xh Xm Xs" countdown and the elapsed time display ("Xh Xm Xs ago")
+- Elapsed and remaining times always display hours, minutes, and seconds (e.g. `0h 5m 30s`)
+
+**Injection pipeline:**
+
+- `app/config.py` — `CHANNEL_TIMEOUT = int(os.getenv("CHANNEL_TIMEOUT", "3600"))`
+- `app/main.py` — `_inject_theme()` adds `"CHANNEL_TIMEOUT_PLACEHOLDER": str(CHANNEL_TIMEOUT)` to its replacements dict
+- `app/chaos_ui/static/index.html` — `window.CHANNEL_TIMEOUT = CHANNEL_TIMEOUT_PLACEHOLDER;` (replaced at serve time)
+
+**Setting the timeout:** Add `CHANNEL_TIMEOUT=<seconds>` to `.env`. A restart is required for the new value to take effect.
 
 ---
 

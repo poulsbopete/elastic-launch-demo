@@ -18,6 +18,7 @@ from app.config import (
     APP_HOST,
     APP_PORT,
     CHANNEL_REGISTRY,
+    CHANNEL_TIMEOUT,
     ELASTIC_API_KEY,
     ELASTIC_URL,
     KIBANA_PROXY,
@@ -269,6 +270,7 @@ body {{ font-family: {theme.font_family}; }}"""
         "CHAOS_TITLE_PLACEHOLDER": theme.chaos_title,
         "LANDING_TITLE_PLACEHOLDER": theme.landing_title,
         "KIBANA_URL_PLACEHOLDER": kibana_display,
+        "CHANNEL_TIMEOUT_PLACEHOLDER": str(CHANNEL_TIMEOUT),
     }
     for placeholder, value in replacements.items():
         html = html.replace(placeholder, value)

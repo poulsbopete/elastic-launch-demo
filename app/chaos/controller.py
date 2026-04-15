@@ -7,7 +7,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
-from app.config import CHANNEL_REGISTRY
+from app.config import CHANNEL_REGISTRY, CHANNEL_TIMEOUT
 
 if TYPE_CHECKING:
     from app.store import ChaosStore
@@ -19,8 +19,8 @@ STANDBY = "STANDBY"
 ACTIVE = "ACTIVE"
 RESOLVING = "RESOLVING"
 
-# Maximum fault duration (seconds)
-MAX_FAULT_DURATION = 3600  # 1 hour
+# Maximum fault duration (seconds) — override via CHANNEL_TIMEOUT in .env
+MAX_FAULT_DURATION = CHANNEL_TIMEOUT
 
 
 class ChaosController:

@@ -36,6 +36,7 @@ SMTP_FROM = os.getenv("SMTP_FROM", "nova7-ops@mission-control.local")
 
 APP_PORT = int(os.getenv("APP_PORT", "8080"))
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+CHANNEL_TIMEOUT = int(os.getenv("CHANNEL_TIMEOUT", "3600"))
 
 # ── Active Scenario ───────────────────────────────────────────────────────
 ACTIVE_SCENARIO = os.getenv("ACTIVE_SCENARIO", "space")
