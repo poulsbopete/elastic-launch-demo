@@ -873,6 +873,45 @@ No need to create a webhook connector — the system connector ID is `system-con
 - Alert context is available via `event.*` namespace: `event.rule.name`, `event.rule.tags[N]`, `event.alerts[0].kibana.alert.*`, `event.spaceId`
 - Encode key data in alert rule `tags` for easy workflow access: `tags: ["nova7", "FuelPressureException"]` → `{{ event.rule.tags[1] }}`
 
+### HITL vs Auto-Remediate: Two-Workflow Pattern
+
+Channels 1-15 use a HITL workflow; channels 16-20 use an auto-remediate workflow. Two separate
+workflow YAML files are deployed; the deployer routes each alert rule to the correct workflow.
+
+**Tag encoding convention** (since inputs are blank, all per-channel data goes in tags):
+```
+tags[0] = namespace          (e.g. "nova7")
+tags[1] = error_type         (e.g. "RSO-TRACKING-LOSS")
+tags[2] = remediation_action (auto-remediate channels only, e.g. "reset_safety_system")
+tags[3] = channel number     (auto-remediate channels only, e.g. "20")
+```
+
+**Alert rule naming:**
+
+- HITL (CH01–CH15): `"{scenario_name} CH{nn}: {channel_name}"`
+- Auto-Remediate (CH16–CH20): `"{scenario_name} CH{nn}: {channel_name} (Auto-Remediate)"`
+
+**Case title** for auto-remediate: `"{{ event.rule.name }}"` (not the `"__SCENARIO_NAME__ RCA: ..."` pattern used by HITL). Since the rule name already contains "(Auto-Remediate)", the case title inherits it automatically.
+
+**Workflow file naming and deployer lookup** (`elastic_config/deployer_alerting.py`):
+
+```python
+# Exact key names match filenames (without .yaml):
+notification_wf_id    = self._workflow_ids.get("significant_event_notification", "")
+auto_remediate_wf_id  = self._workflow_ids.get("significant_event_notification_auto_remediate", "")
+```
+
+Do NOT use a fuzzy "notification in name" search — both workflow names contain "Notification".
+When falling back to `_wf_search`, distinguish by presence/absence of "Auto-Remediate" in the name.
+
+**Auto-remediate workflow steps** (after `create_case`):
+
+1. `queue_remediation` — index to `__NS__-remediation-queue` with `dry_run: false`, `status: "pending"`, `channel: "{{ event.rule.tags[3] }}"`, `action_type: "{{ event.rule.tags[2] }}"`
+2. `add_remediation_comment` — POST comment to `steps.create_case.output.id`
+3. `refetch_case` + `close_case` — GET case for current `version`, then `kibana.updateCase` to `"closed"`
+
+The `RemediationPoller` (`app/chaos/remediation_poller.py`) picks up pending queue entries and calls `chaos_controller.resolve(channel, force=True)` — no changes needed there.
+
 ### Webhook Connector (Legacy)
 ```
 POST /api/actions/connector
@@ -918,8 +957,8 @@ POST /api/actions/connector
 28. **Extracting callback_url from log `event_name`** — `event_name` is a top-level indexed `keyword` field (NOT a passthrough attribute). It contains a JSON string like `{"callback_url": "http://...", "user_email": "user@example.com"}`. Extract using ES|QL: `FROM logs,logs.* | WHERE KQL("body.text: \"ErrorType\"...") | KEEP event_name` → then `data.set` with `json_parse`: `${{ steps.search.output.values[1][0] | json_parse }}`. Access parsed fields via `steps.set_step.output.var[0].event_meta.callback_url`
 29. **Parameterized ES|QL tools — `?param` syntax** — Agent Builder `esql` tools support named parameters using ES|QL's native `?param_name` (for values) and `??param_name` (for identifiers/field names). Define params in `configuration.params` with `{description, type, optional}`. The Agent Builder auto-generates a JSON Schema from params for the LLM. **CRITICAL:** `CONCAT("*", ?param, "*")` does NOT pass validation — use `LIKE ?param` and instruct the LLM in the param description to include wildcards (e.g., `"Wrap in asterisks: *FuelPressureException*"`). `== ?param` works for exact string matching. Refs: https://www.elastic.co/docs/reference/query-languages/esql/esql-rest#esql-rest-params , https://github.com/elastic/elasticsearch/pull/122459
 30. **Prefer parameterized esql tools over `index_search` for logs** — `index_search` lets the LLM auto-generate ES|QL queries, which consistently fails: uses `message` instead of `body.text`, `FROM logs` instead of `FROM logs,logs.*`, `resource.attributes.service.name` instead of `service.name`, `MATCH()` instead of `LIKE`. Parameterized `esql` tools bake in correct field names and query patterns — the LLM only provides parameter values, eliminating 3-4 wasted tool calls per investigation
-29. **`elasticsearch.esql.query` step — preferred for text search in workflows** — Use `elasticsearch.esql.query` instead of `elasticsearch.search` when you need `match_phrase`, `sort`, or other schema-restricted features. Key patterns: (a) Use `FROM logs,logs.*` to include sub-streams. (b) Use `KQL()` function for text matching: `WHERE KQL("body.text: \"ErrorType\" AND severity_text: \"ERROR\"")`. (c) Output is `{columns: [{name, type}], values: [[row1], [row2]]}`. (d) Access values positionally: `steps.X.output.values[0][0]` for first row, first column. (e) Column order matches `KEEP` clause. (f) `format: json` is required in `with` block
-30. **Alert rule tags for workflow data passing** — Since `inputs.*` is blank in alert-triggered workflows, encode key data in alert rule tags. Example: `tags: ["nova7", "FuelPressureException"]` → access in workflow as `event.rule.tags[1]`. Keep tags minimal (prefix + error_type) for reliable array index access
+31. **`elasticsearch.esql.query` step — preferred for text search in workflows** — Use `elasticsearch.esql.query` instead of `elasticsearch.search` when you need `match_phrase`, `sort`, or other schema-restricted features. Key patterns: (a) Use `FROM logs,logs.*` to include sub-streams. (b) Use `KQL()` function for text matching: `WHERE KQL("body.text: \"ErrorType\" AND severity_text: \"ERROR\"")`. (c) Output is `{columns: [{name, type}], values: [[row1], [row2]]}`. (d) Access values positionally: `steps.X.output.values[0][0]` for first row, first column. (e) Column order matches `KEEP` clause. (f) `format: json` is required in `with` block
+32. **Alert rule tags for workflow data passing** — Since `inputs.*` is blank in alert-triggered workflows, encode key data in alert rule tags. Example: `tags: ["nova7", "FuelPressureException"]` → access in workflow as `event.rule.tags[1]`. Keep tags minimal (prefix + error_type) for reliable array index access
 33. **Kibana Advanced Settings — use `/api/kibana/settings`, not `/internal/kibana/settings`** — Settings visible in Stack Management > Advanced Settings (e.g. `observability:streamsEnableSignificantEvents`, `aiAssistant:preferredChatExperience`) must be set via `POST /api/kibana/settings` with `{"changes": {"setting_key": value}}`. The `/internal/kibana/settings` endpoint exists but silently does not apply these user-facing settings — the change appears to succeed (HTTP 200) but the UI setting remains unchanged. Always use the public endpoint for Advanced Settings.
 
 ---
@@ -1049,18 +1088,15 @@ The selector UI (`/`) adapts based on whether credentials are pre-configured:
 
 ### Selector UI — Deployment Action Buttons
 
-Each active deployment in the selector UI (`app/selector/static/index.html`) shows a row of action buttons/links built from `d.*` fields returned by `/api/deployments`:
+Each active deployment in the selector UI (`app/selector/static/index.html`) shows a row of action buttons/links:
 
 | Button | Color | URL / Action |
 | ------ | ----- | ------------ |
-| Platform Overview | neutral (`--bg-input`) | `/slides?deployment_id=...` |
-| Landing | neutral | `/home?deployment_id=...` |
-| Dashboard | neutral | `/dashboard?deployment_id=...` |
 | Executive Dashboard | teal (`--teal`, black text) | `{d.kibana_display_url}/app/dashboards#/view/{d.namespace}-exec-dashboard` (new tab) |
 | Chaos | amber (`--amber`, black text) | `/chaos?deployment_id=...` |
 | Stop & Teardown | red (`--red`, white text) | JS `stopAndTeardown()` |
 
-**Executive Dashboard link** uses `d.kibana_display_url` (from `/api/deployments`), which is `KIBANA_PROXY or kibana_url`. This is the same URL pattern used by the slides page "Launch Demo" button (`KIBANA_URL_PLACEHOLDER/app/dashboards#/view/NAMESPACE_PLACEHOLDER-exec-dashboard`).
+**Executive Dashboard link** uses `d.kibana_display_url` (from `/api/deployments`), which is `KIBANA_PROXY or kibana_url`.
 
 ### Kibana Proxy for User-Facing Links (`KIBANA_PROXY`)
 

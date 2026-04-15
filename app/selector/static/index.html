@@ -649,13 +649,20 @@
             c.classList.toggle('selected', c.dataset.id === id);
         });
         const alreadyDeployed = activeDeployments.some(d => d.scenario_id === id && d.running);
-        if (envCreds && !alreadyDeployed) {
-            document.getElementById('env-launch-panel').style.display = 'block';
-            document.getElementById('env-launch-btn').disabled = false;
+        if (alreadyDeployed) {
+            document.getElementById('env-launch-panel').style.display = 'none';
             document.getElementById('connection-panel').classList.remove('visible');
-        } else if (!envCreds && !alreadyDeployed) {
+        } else if (envCreds) {
+            document.getElementById('env-launch-panel').style.display = 'block';
+            const envBtn = document.getElementById('env-launch-btn');
+            envBtn.disabled = false;
+            envBtn.innerHTML = '<span class="btn-icon">&#9654;</span>Launch';
+            document.getElementById('connection-panel').classList.remove('visible');
+        } else {
             document.getElementById('connection-panel').classList.add('visible');
-            document.getElementById('launch-btn').disabled = false;
+            const btn = document.getElementById('launch-btn');
+            btn.disabled = false;
+            btn.innerHTML = '<span class="btn-icon">&#9654;</span>Launch';
         }
     }
 
