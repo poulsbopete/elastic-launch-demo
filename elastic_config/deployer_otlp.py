@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import time
 import httpx
 
 from elastic_config.deployer_base import _es_headers, ProgressCallback
+
+_OTLP_RETRIES = 4          # attempts (initial + 3 retries)
+_OTLP_RETRY_DELAY = 5.0    # seconds between attempts
 
 
 class OtlpMixin:
@@ -29,16 +33,22 @@ class OtlpMixin:
         1. Cluster settings API (display_name + cloud suffix)
         2. .es. → .ingest. URL swap
         Each candidate is verified with a live OTLP probe before being returned.
+        Retries up to _OTLP_RETRIES times to handle newly provisioned clusters
+        where the ingest endpoint may not be ready immediately.
         """
-        # Strategy 1: cluster settings API
-        endpoint = self._derive_otlp_via_cluster_api(client)
-        if endpoint and self._verify_otlp_candidate(client, endpoint):
-            return endpoint
+        for attempt in range(_OTLP_RETRIES):
+            if attempt > 0:
+                time.sleep(_OTLP_RETRY_DELAY)
 
-        # Strategy 2: .es. → .ingest. swap
-        endpoint = self._derive_otlp_via_url_swap()
-        if endpoint and self._verify_otlp_candidate(client, endpoint):
-            return endpoint
+            # Strategy 1: cluster settings API
+            endpoint = self._derive_otlp_via_cluster_api(client)
+            if endpoint and self._verify_otlp_candidate(client, endpoint):
+                return endpoint
+
+            # Strategy 2: .es. → .ingest. swap
+            endpoint = self._derive_otlp_via_url_swap()
+            if endpoint and self._verify_otlp_candidate(client, endpoint):
+                return endpoint
 
         return None
 
@@ -87,7 +97,13 @@ class OtlpMixin:
         return endpoint
 
     def _verify_otlp_candidate(self, client: httpx.Client, endpoint: str) -> bool:
-        """Return True if the endpoint responds to an OTLP probe."""
+        """Return True if the endpoint responds to an OTLP probe.
+
+        Any HTTP response (including 4xx) is treated as reachable — it means
+        the ingest endpoint exists and is routing traffic.  Only connection
+        errors and 5xx (service not yet ready) count as failures, which the
+        caller retries for newly provisioned clusters.
+        """
         try:
             resp = client.post(
                 f"{endpoint}/v1/logs",
@@ -98,7 +114,7 @@ class OtlpMixin:
                 json={"resourceLogs": []},
                 timeout=5,
             )
-            return resp.status_code == 200
+            return resp.status_code < 500
         except Exception:
             return False
 
