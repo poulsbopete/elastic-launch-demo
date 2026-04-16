@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/chaos/static/style.css?v=3">
+    <link rel="stylesheet" href="/chaos/static/style.css?v=10">
     <!--THEME_CSS-->
 </head>
 <body>
@@ -18,7 +18,6 @@
         </div>
         <div class="header-nav">
             <a href="javascript:history.back()" class="nav-link">&#8592; BACK</a>
-            <a href="/dashboard" class="nav-link" id="nav-dashboard">DASHBOARD</a>
         </div>
     </header>
 
@@ -160,12 +159,6 @@
         window.DEPLOYMENT_ID = 'DEPLOYMENT_ID_PLACEHOLDER';
         window.KIBANA_URL = 'KIBANA_URL_PLACEHOLDER';
         window.CHANNEL_TIMEOUT = CHANNEL_TIMEOUT_PLACEHOLDER;
-        (function() {
-            var did = window.DEPLOYMENT_ID;
-            if (!did) return;
-            var link = document.getElementById('nav-dashboard');
-            if (link) link.href = '/dashboard?deployment_id=' + encodeURIComponent(did);
-        })();
     </script>
     <script src="/chaos/static/app.js?v=4"></script>
 </body>

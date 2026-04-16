@@ -87,6 +87,22 @@ steps:
         type: ".none"
         fields: null
 
+  - name: attach_alert_to_case
+    type: kibana.request
+    with:
+      method: POST
+      path: "/api/cases/{{ steps.create_case.output.id }}/comments"
+      headers:
+        kbn-xsrf: "true"
+      body:
+        type: "alert"
+        alertId: "{{ event.alerts[0]._id }}"
+        index: "{{ event.alerts[0]._index }}"
+        rule:
+          id: "{{ event.rule.id }}"
+          name: "{{ event.rule.name }}"
+        owner: "observability"
+
   - name: audit_log
     type: elasticsearch.index
     with:
