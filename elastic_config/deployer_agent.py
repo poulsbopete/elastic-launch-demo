@@ -203,9 +203,35 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
 6. **Recommendation** — Prioritized remediation steps
 7. **Confidence** — HIGH/MEDIUM/LOW with reasoning"""
 
-    def _cleanup_agent(self, client: httpx.Client):
-        """Delete agent and custom tools."""
+    def _cleanup_conversations(self, client: httpx.Client) -> int:
+        """Delete all Agent Builder conversations belonging to the scenario's agent."""
         agent_id = self.scenario.agent_config.get("id", f"{self.ns}-analyst")
+        resp = client.get(
+            f"{self.kibana_url}/api/agent_builder/conversations",
+            headers=_kibana_headers(self.api_key),
+            params={"agent_id": agent_id},
+        )
+        if resp.status_code >= 300:
+            logger.warning("Failed to list conversations: HTTP %s", resp.status_code)
+            return 0
+        conversations = resp.json().get("results", [])
+        deleted = 0
+        for conv in conversations:
+            r = client.delete(
+                f"{self.kibana_url}/api/agent_builder/conversations/{conv['id']}",
+                headers=_kibana_headers(self.api_key),
+            )
+            if r.status_code < 300:
+                deleted += 1
+            else:
+                logger.warning("Failed to delete conversation %s: HTTP %s", conv["id"], r.status_code)
+        return deleted
+
+    def _cleanup_agent(self, client: httpx.Client) -> int:
+        """Delete agent, custom tools, and conversations. Returns conversation count deleted."""
+        agent_id = self.scenario.agent_config.get("id", f"{self.ns}-analyst")
+        # Delete conversations before removing the agent
+        deleted_convs = self._cleanup_conversations(client)
         client.delete(
             f"{self.kibana_url}/api/agent_builder/agents/{agent_id}",
             headers=_kibana_headers(self.api_key),
@@ -221,3 +247,4 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
                 f"{self.kibana_url}/api/agent_builder/tools/{tool_id}",
                 headers=_kibana_headers(self.api_key),
             )
+        return deleted_convs

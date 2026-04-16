@@ -244,7 +244,7 @@ class ScenarioDeployer(
             DeployStep("Delete workflows"),             # 1
             DeployStep("Delete alert rules"),           # 2
             DeployStep("Delete significant events"),    # 3
-            DeployStep("Delete AI agent & tools"),      # 4
+            DeployStep("Delete AI agent, tools & conversations"),  # 4
             DeployStep("Delete knowledge base"),        # 5
             DeployStep("Delete audit indices"),         # 6
             DeployStep("Delete dashboard"),             # 7
@@ -302,14 +302,14 @@ class ScenarioDeployer(
                     step.detail = str(exc)
                 _notify(progress)
 
-                # Step 4: Delete agent + tools
+                # Step 4: Delete agent + tools + conversations
                 step = progress.steps[4]
                 step.status = "running"
                 _notify(progress)
                 try:
-                    self._cleanup_agent(client)
+                    deleted_convs = self._cleanup_agent(client)
                     step.status = "ok"
-                    step.detail = "Agent and tools removed"
+                    step.detail = f"Agent and tools removed, {deleted_convs} conversation(s) deleted"
                 except Exception as exc:
                     step.status = "failed"
                     step.detail = str(exc)
@@ -447,14 +447,24 @@ class ScenarioDeployer(
                 break
             ids = [c["id"] for c in cases if c.get("id")]
             if ids:
+                # Kibana's query parser requires repeated keys to treat `ids`
+                # as an array. A single ?ids=x becomes a string and fails
+                # schema validation. Duplicate the list so even one ID is
+                # sent as ?ids=x&ids=x, which parses as ['x', 'x']; Kibana
+                # deduplicates internally and deletes the case once.
+                params = [("ids", cid) for cid in (ids * 2 if len(ids) == 1 else ids)]
+                logger.info("Deleting %d case(s): %s", len(ids), ids)
                 r = client.delete(
                     f"{self.kibana_url}/api/cases",
                     headers=_kibana_headers(self.api_key),
-                    params=[("ids", cid) for cid in ids],
+                    params=params,
                 )
                 if r.status_code < 300:
                     deleted += len(ids)
                 else:
+                    logger.warning(
+                        "Failed to delete cases (HTTP %s): %s", r.status_code, r.text[:300]
+                    )
                     break  # avoid infinite loop if delete fails
         return deleted
 
