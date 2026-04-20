@@ -35,6 +35,10 @@ class BankingScenario(BaseScenario):
     def namespace(self) -> str:
         return "banking"
 
+    @property
+    def sort_order(self) -> int:
+        return 6
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

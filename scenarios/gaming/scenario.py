@@ -34,6 +34,10 @@ class GamingScenario(BaseScenario):
     def namespace(self) -> str:
         return "gaming"
 
+    @property
+    def sort_order(self) -> int:
+        return 5
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

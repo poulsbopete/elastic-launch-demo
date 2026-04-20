@@ -35,6 +35,10 @@ class HealthcareScenario(BaseScenario):
     def namespace(self) -> str:
         return "healthcare"
 
+    @property
+    def sort_order(self) -> int:
+        return 4
+
     # -- Services ---------------------------------------------------------------
 
     @property

@@ -108,6 +108,11 @@ class BaseScenario(ABC):
         """ES/telemetry namespace prefix: 'nova7', 'fanatics', etc."""
         ...
 
+    @property
+    def sort_order(self) -> int:
+        """Display order on the scenario selector. Lower numbers appear first. Default 999."""
+        return 999
+
     # ── Services & Topology ──────────────────────────────────────────
 
     @property

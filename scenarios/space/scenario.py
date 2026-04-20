@@ -34,6 +34,10 @@ class SpaceScenario(BaseScenario):
     def namespace(self) -> str:
         return "nova7"
 
+    @property
+    def sort_order(self) -> int:
+        return 1
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property
