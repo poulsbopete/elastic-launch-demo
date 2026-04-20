@@ -307,6 +307,39 @@ POST /_bulk?refresh=true
 - On serverless, creating an index that already exists returns an error (not idempotent)
 - Wrap in error handling: `|| log_warn "may already exist"`
 
+### Security API — Roles and Users
+
+**Role creation/update:**
+```
+PUT /_security/role/{role_name}
+Authorization: ApiKey {api_key}
+Content-Type: application/json
+```
+
+- Body uses the **ES native role format**: `applications`, `cluster`, `indices`, `metadata`, `run_as`
+- `transient_metadata` is **read-only** — strip it from the body before PUT or the request will fail
+- Do NOT use Kibana's `PUT /api/security/role/{name}` if your role JSON uses the native ES format with `application: "kibana-.kibana"` — that endpoint expects a different schema with a `kibana` array
+- Use `_es_headers()` (no `kbn-xsrf`), not `_kibana_headers()`
+
+**User creation/update:**
+```
+PUT /_security/user/{username}
+Authorization: ApiKey {api_key}
+Content-Type: application/json
+```
+
+- `password` is **required** for new users; omit it to keep an existing user's password unchanged
+- Accepted fields: `password`, `roles`, `full_name`, `email`, `enabled`, `metadata`
+- `username` in the body is ignored (taken from the URL path); strip it or leave it — both work
+- Use `_es_headers()`, not `_kibana_headers()`
+
+**Conditional provisioning pattern** — gate role/user creation on an env var so deployments without a guest password skip the step entirely:
+```python
+ro_password = os.getenv("KIBANA_RO_PASSWORD", "").strip()
+if ro_password:
+    # create role, then user with password=ro_password
+```
+
 ---
 
 ## OTLP Telemetry Patterns
@@ -919,11 +952,17 @@ auto_remediate_wf_id  = self._workflow_ids.get("significant_event_notification_a
 Do NOT use a fuzzy "notification in name" search — both workflow names contain "Notification".
 When falling back to `_wf_search`, distinguish by presence/absence of "Auto-Remediate" in the name.
 
-**Auto-remediate workflow steps** (after `create_case`):
+**Steps shared by both workflows** (after `create_case`):
 
-1. `queue_remediation` — index to `__NS__-remediation-queue` with `dry_run: false`, `status: "pending"`, `channel: "{{ event.rule.tags[3] }}"`, `action_type: "{{ event.rule.tags[2] }}"`
-2. `add_remediation_comment` — POST comment to `steps.create_case.output.id`
-3. `refetch_case` + `close_case` — GET case for current `version`, then `kibana.updateCase` to `"closed"`
+1. `attach_alert_to_case` — MUST be immediately after `create_case` (HTTP 400 if case is already closed when this runs)
+
+**HITL steps** (after `attach_alert_to_case`):
+
+1. `inject_case_context` — `kibana.request` to `/api/agent_builder/converse` with `conversation_id`; message MUST include explicit "Do NOT execute any remediation actions" — providing a case ID alone is enough for the agent to self-remediate
+
+**Auto-remediate steps** (after `attach_alert_to_case`):
+
+1. `request_remediation` — `kibana.request` to `/api/agent_builder/converse` with `conversation_id`; asks the agent to call the `nova7_remediation_action` workflow tool passing `action_type`, `channel`, `error_type`, `case_id`, `dry_run: false`. The `remediation_action` workflow tool handles the queue write (for `RemediationPoller`), case comment, and case close.
 
 The `RemediationPoller` (`app/chaos/remediation_poller.py`) picks up pending queue entries and calls `chaos_controller.resolve(channel, force=True)` — no changes needed there.
 
@@ -981,6 +1020,41 @@ POST /api/actions/connector
 36. **Agent Builder conversations can be deleted via API; filter by `agent_id` for teardown** — `GET /api/agent_builder/conversations?agent_id={agent_id}` returns all conversations for a specific agent. `DELETE /api/agent_builder/conversations/{conversation_id}` deletes one (requires `kbn-xsrf: true`; returns `{"success": true}`). Filtering by `agent_id` is more reliable than title matching — it captures all conversations regardless of title without false positives. `_cleanup_agent` in `deployer_agent.py` calls `_cleanup_conversations` first (before deleting the agent) and returns the count for the teardown progress step detail.
 
 37. **Kibana Advanced Settings — use `/api/kibana/settings`, not `/internal/kibana/settings`** — Settings visible in Stack Management > Advanced Settings (e.g. `observability:streamsEnableSignificantEvents`, `aiAssistant:preferredChatExperience`) must be set via `POST /api/kibana/settings` with `{"changes": {"setting_key": value}}`. The `/internal/kibana/settings` endpoint exists but silently does not apply these user-facing settings — the change appears to succeed (HTTP 200) but the UI setting remains unchanged. Always use the public endpoint for Advanced Settings.
+
+38. **`ai.agent` `conversation-id` field is ignored — always spawns a new conversation** — The `conversation-id` field at the step level in `ai.agent` steps is NOT honored by the workflow engine. Every `ai.agent` step creates a brand-new conversation regardless, so follow-up messages never appear in the Agent Builder conversation the user sees. To continue an existing conversation, use `kibana.request` to `POST /api/agent_builder/converse` with `conversation_id` in the request body instead.
+
+39. **Use `kibana.request` to `/api/agent_builder/converse` for all agent calls in workflows** — This is the correct pattern for both creating and continuing conversations. For a new conversation, omit `conversation_id`. To continue one, pass `conversation_id: "{{ steps.prev_step.output.conversation_id }}"` in the body. Output fields: `output.conversation_id` and `output.response.message` (NOT `output.message` — that path doesn't exist). Always set `timeout: 10m` since RCA can take several minutes.
+
+    ```yaml
+    - name: run_rca
+      type: kibana.request
+      with:
+        method: POST
+        path: "/api/agent_builder/converse"
+        headers:
+          kbn-xsrf: "true"
+        body:
+          agent_id: __AGENT_ID__
+          input: "Your prompt here"
+      timeout: 10m
+    # Continue the conversation:
+    - name: follow_up
+      type: kibana.request
+      with:
+        method: POST
+        path: "/api/agent_builder/converse"
+        headers:
+          kbn-xsrf: "true"
+        body:
+          agent_id: __AGENT_ID__
+          conversation_id: "{{ steps.run_rca.output.conversation_id }}"
+          input: "Follow-up message"
+      timeout: 10m
+    ```
+
+40. **LLM self-remediates when given a case ID after RCA** — After completing a root cause analysis, the agent is primed to fix the problem it just diagnosed. If a subsequent message contains a case ID (even just "Case X has been opened to track this incident"), the agent will look up the case and decide to execute remediation on its own. Any follow-up message in a HITL conversation context MUST include an explicit prohibition: "Do NOT execute any remediation actions. A human operator will review your RCA and decide whether to act." Without this, sporadic auto-remediation occurs on HITL channels.
+
+41. **`attach_alert_to_case` must run immediately after `create_case`** — HTTP 400 "Alert cannot be attached to a closed case" occurs if this step runs after the case has already been closed by another step (e.g. `close_case` in the auto-remediate workflow, or via the `remediation_action` workflow tool). Place `attach_alert_to_case` as the very first step after `create_case`, before any AI agent calls, remediation steps, or case-management steps.
 
 ---
 
