@@ -37,7 +37,12 @@
     "feature_stackAlerts.read",
     "feature_uptime.read",
     "feature_visualize_v2.read",
-    "feature_streams.read"
+    "feature_streams.read",
+    "feature_workflowsManagement.minimal_read",
+    "feature_workflowsManagement.workflow_execute",
+    "feature_workflowsManagement.workflow_read",
+    "feature_workflowsManagement.workflow_execution_read",
+    "feature_agentBuilder.read"
    ],
    "resources": [
     "*"
@@ -169,6 +174,23 @@
    ],
    "privileges": [
     "write"
+   ]
+  },
+  {
+   "allow_restricted_indices": false,
+   "field_security": {
+    "grant": [
+     "*"
+    ]
+   },
+   "names": [
+    "*-remediation-queue",
+    "*-remediation-audit"
+   ],
+   "privileges": [
+    "create_doc",
+    "read",
+    "view_index_metadata"
    ]
   }
  ],
