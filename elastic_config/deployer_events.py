@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
@@ -63,15 +64,41 @@ class EventsMixin:
                 f"{self.kibana_url}/api/streams/logs.otel/queries",
                 headers=_kibana_headers(self.api_key),
             )
-            if resp.status_code < 300:
-                data = resp.json()
-                queries = data if isinstance(data, list) else data.get("queries", [])
-                for q in queries:
-                    qid = q.get("id", "")
-                    if qid and qid.startswith(id_prefix):
-                        client.delete(
-                            f"{self.kibana_url}/api/streams/logs.otel/queries/{qid}",
-                            headers=_kibana_headers(self.api_key),
-                        )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Could not list significant events for cleanup (%s): %s", self.ns, exc)
+            return
+
+        if resp.status_code >= 300:
+            logger.warning(
+                "Could not list significant events for cleanup (%s): HTTP %s",
+                self.ns, resp.status_code,
+            )
+            return
+
+        data = resp.json()
+        queries = data if isinstance(data, list) else data.get("queries", [])
+        for q in queries:
+            qid = q.get("id", "")
+            if not qid or not qid.startswith(id_prefix):
+                continue
+            self._delete_significant_event(client, qid)
+
+    def _delete_significant_event(self, client: httpx.Client, qid: str, retries: int = 5) -> None:
+        """Delete a single stream query, retrying on 409 (Kibana concurrency conflict)."""
+        url = f"{self.kibana_url}/api/streams/logs.otel/queries/{qid}"
+        for attempt in range(1, retries + 1):
+            try:
+                resp = client.delete(url, headers=_kibana_headers(self.api_key))
+            except Exception as exc:
+                logger.warning("Exception deleting significant event %s: %s", qid, exc)
+                return
+            if resp.status_code == 404:
+                return  # already gone
+            if resp.status_code == 409 and attempt < retries:
+                time.sleep(attempt)  # 1s, 2s, 3s, 4s before retrying
+                continue
+            if resp.status_code >= 300:
+                logger.warning(
+                    "Failed to delete significant event %s: HTTP %s", qid, resp.status_code,
+                )
+            return

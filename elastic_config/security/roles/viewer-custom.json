@@ -188,6 +188,7 @@
     "*-remediation-audit"
    ],
    "privileges": [
+    "auto_configure",
     "create_doc",
     "read",
     "view_index_metadata"
