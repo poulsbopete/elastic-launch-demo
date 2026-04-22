@@ -16,7 +16,7 @@ _SECURITY_DIR = Path(__file__).parent / "security"
 class PlatformMixin:
 
     def _configure_platform_settings(self, client: httpx.Client, notify: ProgressCallback):
-        """Enable wired streams, significant events, and agent builder."""
+        """Enable wired streams, significant events, agent builder, and AI docs."""
         step = self._step(4)
         step.status = "running"
         notify(self.progress)
@@ -77,7 +77,21 @@ class PlatformMixin:
         except Exception as exc:
             errors.append(f"agent builder ({exc})")
 
-        # 4. Enable workflows UI
+        # 4. Install Elastic product documentation (for AI assistant context)
+        try:
+            resp = client.post(
+                f"{self.kibana_url}/internal/product_doc_base/install",
+                headers=_kibana_headers(self.api_key),
+                json={"inferenceId": ".elser-2-elasticsearch", "resourceType": "product_doc"},
+            )
+            if resp.status_code < 300:
+                configured.append("AI docs")
+            else:
+                errors.append(f"AI docs (HTTP {resp.status_code})")
+        except Exception as exc:
+            errors.append(f"AI docs ({exc})")
+
+        # 5. Enable workflows UI
         try:
             resp = client.post(
                 f"{self.kibana_url}/internal/kibana/settings",
@@ -91,7 +105,7 @@ class PlatformMixin:
         except Exception as exc:
             errors.append(f"workflows UI ({exc})")
 
-        # 5 & 6. Create viewer-custom role and guest user (only when KIBANA_RO_PASSWORD is set)
+        # 6 & 7. Create viewer-custom role and guest user (only when KIBANA_RO_PASSWORD is set)
         ro_password = os.getenv("KIBANA_RO_PASSWORD", "").strip()
         if ro_password:
             try:
