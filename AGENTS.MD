@@ -199,20 +199,23 @@ DELETE /api/agent_builder/skills/{skill_id}?force=false
 
 ### Attaching Skills to Agents
 
-Skills are referenced from agents via `configuration.skills` (analogous to `configuration.tools`):
-```
+Skills are attached via **`configuration.skill_ids`** — a flat array of skill ID strings inside `configuration`. Both `configuration.skills` (object array) and top-level `skills` return 400 "Additional properties are not allowed".
+
+```json
 POST /api/agent_builder/agents
 {
   "id": "<agent-id>",
   "name": "...",
+  "description": "...",
   "configuration": {
     "instructions": "...",
     "tools": [{ "tool_ids": ["tool1"] }],
-    "skills": [{ "skill_ids": ["skill1", "skill2"] }]
+    "skill_ids": ["skill1", "skill2"]
   }
 }
 ```
-*(Verify `configuration.skills` shape against a GET response — mirror the pattern used for `configuration.tools`.)*
+
+Other optional `configuration` fields from the OpenAPI spec: `plugin_ids`, `enable_elastic_capabilities` (boolean), `workflow_ids` — all arrays with max 100 items.
 
 ### Spaces Support
 
@@ -1098,7 +1101,7 @@ POST /api/actions/connector
 
 The deployer is composed of mixins (`SloMixin`, `AlertingMixin`, `DashboardMixin`, etc.), each contributing one or more numbered steps to `DeployProgress`. Steps are referenced by index via `self._step(n)`. Adding a new step at any index requires bumping all `_step()` calls in every file with a higher index.
 
-**Current step index assignments (as of 2026-03-31):**
+**Current step index assignments (as of 2026-04-22):**
 | Index | Step | File |
 |-------|------|------|
 | 0 | Connectivity check | `deployer.py` |
@@ -1109,7 +1112,7 @@ The deployer is composed of mixins (`SloMixin`, `AlertingMixin`, `DashboardMixin
 | 5 | Generate APM rollup data | `deployer_apm.py` |
 | 6 | Deploy workflows | `deployer_workflows.py` |
 | 7 | Index knowledge base | `deployer_kb.py` |
-| 8 | Deploy AI agent tools | `deployer_agent.py` |
+| 8 | Deploy AI agent tools + skills | `deployer_agent.py` + `deployer_skills.py` |
 | 9 | Create AI agent | `deployer_agent.py` |
 | 10 | Create significant events | `deployer_streams.py` |
 | 11 | Create data views | `deployer_views.py` |
@@ -1117,6 +1120,8 @@ The deployer is composed of mixins (`SloMixin`, `AlertingMixin`, `DashboardMixin
 | 13 | Create alert rules | `deployer_alerting.py` |
 | 14 | Enable APM anomaly detection | `deployer_apm.py` |
 | 15 | Create SLOs | `deployer_slos.py` |
+
+**Skills deploy as part of step 8** — `_deploy_tools()` calls `_deploy_skills()` after deploying all tools; `step.items_total` is set to `len(tools) + len(skill_defs)`. No step index bump required.
 
 **Gotcha:** When inserting a step, update `_step(n)` calls in every mixin file that uses a higher index. There are typically 9+ files involved.
 
@@ -1421,7 +1426,7 @@ Use `urllib.parse.quote(view_id, safe="")` in Python. The Logs data view ID (`lo
 | 1 | Delete workflows |
 | 2 | Delete alert rules |
 | 3 | Delete service stream |
-| 4 | Delete AI agent, tools & conversations |
+| 4 | Delete AI agent, tools, skills & conversations |
 | 5 | Delete knowledge base |
 | 6 | Delete audit indices |
 | 7 | Delete dashboard |

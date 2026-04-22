@@ -27,6 +27,7 @@ from elastic_config.deployer_slos import SloMixin
 from elastic_config.deployer_workflows import WorkflowsMixin
 from elastic_config.deployer_kb import KbMixin
 from elastic_config.deployer_agent import AgentMixin
+from elastic_config.deployer_skills import SkillsMixin
 from elastic_config.deployer_streams import StreamsMixin
 from elastic_config.deployer_views import DataViewsMixin
 from elastic_config.deployer_dashboard import DashboardMixin
@@ -45,6 +46,7 @@ class ScenarioDeployer(
     WorkflowsMixin,
     KbMixin,
     AgentMixin,
+    SkillsMixin,
     StreamsMixin,
     DataViewsMixin,
     DashboardMixin,
@@ -69,8 +71,9 @@ class ScenarioDeployer(
         self.kibana_display_url = kibana_proxy.strip().rstrip("/") or self.kibana_url
         self.ns = scenario.namespace
         self.progress = DeployProgress()
-        self._workflow_ids: dict[str, str] = {}  # name fragment -> workflow ID
-        self._created_tool_ids: list[str] = []   # tools that were actually created
+        self._workflow_ids: dict[str, str] = {}     # name fragment -> workflow ID
+        self._created_tool_ids: list[str] = []     # tools that were actually created
+        self._created_skill_ids: list[str] = []    # skill IDs attached to the agent
 
     # ── Public API ─────────────────────────────────────────────────────
 
