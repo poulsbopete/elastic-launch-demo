@@ -611,10 +611,34 @@ steps:
 ```
 POST /api/streams/_enable                      — Enable Streams (idempotent)
 GET  /api/streams                              — List available streams
+POST /api/streams/{name}/_fork                 — Fork a stream into a child stream
+DELETE /api/streams/{name}                     — Delete a stream (also removes its significant events)
 POST /api/streams/{name}/queries/_bulk         — Bulk create/update/delete queries
 GET  /api/streams/{name}/queries               — List queries on a stream
-DELETE /api/streams/{name}/queries/{id}         — Delete a single query
+DELETE /api/streams/{name}/queries/{id}        — Delete a single query
 ```
+
+### Forking a Stream (per-scenario isolation)
+
+Each scenario forks `logs.otel` into a namespace-specific child stream (`logs.otel.{ns}`) filtered by `resource.attributes.service.namespace`. Significant events (queries) are then attached to the child stream, not the root stream.
+
+```json
+POST /api/streams/logs.otel/_fork
+{
+  "where": {
+    "field": "resource.attributes.service.namespace",
+    "eq": "gaming"
+  },
+  "status": "enabled",
+  "stream": {
+    "name": "logs.otel.gaming"
+  }
+}
+```
+
+- Non-2xx on fork is non-fatal — log a warning and continue (stream may already exist on redeploy)
+- On teardown, `DELETE /api/streams/logs.otel.{ns}` removes the stream **and** all its significant events in one call — no need to enumerate and delete individual queries
+- The fork is server-side routing: OTLP data still ingests to `logs.otel`; the fork rule copies matching documents to the child stream automatically
 
 ### CRITICAL: Required Headers
 All Streams endpoints require both:
@@ -632,7 +656,7 @@ All Streams endpoints require both:
         "title": "Human-readable title",
         "description": "",
         "esql": {
-          "query": "FROM logs.otel,logs.otel.* METADATA _id, _source | WHERE body.text LIKE \"*ERROR_CODE*\" AND severity_text == \"ERROR\""
+          "query": "FROM logs.otel.{ns},logs.otel.{ns}.* METADATA _id, _source | WHERE body.text LIKE \"*ERROR_CODE*\" AND severity_text == \"ERROR\""
         }
       }
     }
@@ -643,7 +667,7 @@ All Streams endpoints require both:
 **Gotchas:**
 
 - `description` is **REQUIRED** as of 9.4.0 — omitting it returns 400 `invalid_union` ZodError; an empty string `""` is acceptable
-- The `esql` field (object with `query` string) is the current supported format — use `FROM logs.otel,logs.otel.*` for OTLP log streams
+- The `esql` field (object with `query` string) is the current supported format — use `FROM logs.otel.{ns},logs.otel.{ns}.*` for OTLP log streams (where `{ns}` is the scenario namespace)
 - The `kql` field was used in earlier versions; `esql` is now preferred for semantic searchability
 - The `filter` DSL (`and`/`or`/`eq` combinators) from the API docs does **NOT** work
 - `evidence` and `feature` fields are optional metadata (they get stored but are not the detection mechanism)
@@ -661,7 +685,8 @@ attributes.error.type: "ThermalCalibrationException" AND attributes.sensor.type:
 
 ### Stream Name Discovery
 - `GET /api/streams` returns available streams
-- For OTLP logs, the stream name is `logs.otel`
+- For OTLP logs, the root stream is `logs.otel`; each scenario forks this into `logs.otel.{ns}` (e.g. `logs.otel.gaming`)
+- Significant events and all ES|QL queries should target the child stream `logs.otel.{ns},logs.otel.{ns}.*`
 - Stream must contain data for queries to match
 
 ### Verification
@@ -849,14 +874,19 @@ Beyond the defaults (`system.cpu.time`, `system.memory.usage`, `system.disk.io`,
 ## Kibana Data Views
 
 The OTel dashboards expect these data views to exist:
-- `logs-*` — for log dashboards and Exec Dashboard
+- `logs.otel.{ns}` (ID) / `logs.otel.{ns},logs.otel.{ns}.*,logs-*` (title/pattern) — scenario-scoped Logs view for Exec Dashboard; ID is namespace-specific so multiple scenarios coexist
+- `logs-*` — generic OTel log view (shared; do NOT delete on teardown)
 - `metrics-*` — for host/system metrics dashboards
+- `traces-*` — for APM/trace dashboards
+- `metrics-hostmetricsreceiver.otel-*` — required by OTel Host Details dashboards
 
 Create via:
 ```bash
 POST /api/data_views/data_view
-{"data_view": {"title": "metrics-*", "name": "metrics-*", "timeFieldName": "@timestamp"}}
+{"data_view": {"id": "logs.otel.gaming", "title": "logs.otel.gaming,logs.otel.gaming.*,logs-*", "name": "Gaming Logs", "timeFieldName": "@timestamp"}, "override": true}
 ```
+
+**CRITICAL: Dashboard panel references must match the deployed data view ID.** Lens panels embed `{"id": "<data_view_id>", "type": "index-pattern"}` references in their `embeddableConfig.attributes.references` array. If the data view ID used by the dashboard generator (`DATA_VIEW_ID_LOGS` in `generate_exec_dashboard.py`) does not exactly match the ID of the data view created by `deployer_views.py`, Kibana silently fails to resolve those panels — the dashboard imports with no error but affected panels are blank/missing. Always keep both in sync. In `generate_exec_dashboard.py`, the local variable `DATA_VIEW_ID_LOGS = f"logs.otel.{namespace}"` at the top of `_build_dashboard_ndjson()` shadows the module-level constant to ensure the generated references match the deployed data view ID.
 
 ---
 
@@ -1056,6 +1086,10 @@ POST /api/actions/connector
 
 41. **`attach_alert_to_case` must run immediately after `create_case`** — HTTP 400 "Alert cannot be attached to a closed case" occurs if this step runs after the case has already been closed by another step (e.g. `close_case` in the auto-remediate workflow, or via the `remediation_action` workflow tool). Place `attach_alert_to_case` as the very first step after `create_case`, before any AI agent calls, remediation steps, or case-management steps.
 
+42. **Dashboard panel data view ID must exactly match the deployed data view ID** — Lens by-value panels embed `{"id": "<data_view_id>", "type": "index-pattern"}` references inside `embeddableConfig.attributes.references`. Kibana resolves these at render time. If the ID in the generated NDJSON does not match an existing data view, Kibana silently omits the affected panels — the dashboard imports successfully with HTTP 200 and no logged errors, but panels that use the missing data view are blank. When changing a data view ID (e.g. from `"logs*"` to `"logs.otel.gaming"`), the dashboard generator must be updated in the same change. In `generate_exec_dashboard.py`, the local variable `DATA_VIEW_ID_LOGS = f"logs.otel.{namespace}"` at the top of `_build_dashboard_ndjson()` ensures the generated references always match what `deployer_views.py` actually creates.
+
+43. **Scope all ES|QL queries to the namespace child stream, not the root stream** — All ES|QL queries in agent tools, workflows, dashboards, and significant events should use `FROM logs.otel.{ns},logs.otel.{ns}.*` (e.g. `logs.otel.gaming,logs.otel.gaming.*`), not `FROM logs.otel,logs.otel.*`. The child stream is created by forking `logs.otel` on deployment and contains only that scenario's logs. Querying the root stream in a multi-scenario environment returns data from all scenarios. `app/telemetry.py` remains pointed at `logs.otel` for OTLP ingestion — the fork routing is server-side and transparent to the sender.
+
 ---
 
 ## Deployer Architecture & URL Derivation
@@ -1077,7 +1111,7 @@ The deployer is composed of mixins (`SloMixin`, `AlertingMixin`, `DashboardMixin
 | 7 | Index knowledge base | `deployer_kb.py` |
 | 8 | Deploy AI agent tools | `deployer_agent.py` |
 | 9 | Create AI agent | `deployer_agent.py` |
-| 10 | Create significant events | `deployer_events.py` |
+| 10 | Create significant events | `deployer_streams.py` |
 | 11 | Create data views | `deployer_views.py` |
 | 12 | Import executive dashboard | `deployer_dashboard.py` |
 | 13 | Create alert rules | `deployer_alerting.py` |
@@ -1343,7 +1377,7 @@ Teardown must delete **only** resources created for the scenario. The scenario's
 | AI agent | Exact ID: `{ns}-analyst` | Very low |
 | Tools | Exact prefixed IDs from `scenario.tool_definitions` + `prefixed_tool_id("remediation_action")` + `prefixed_tool_id("escalation_action")` | Very low |
 | Executive dashboard | Exact ID: `{ns}-exec-dashboard` | Very low |
-| Stream queries | ID prefix: `{ns}-se-` | Low |
+| Service stream | Exact name: `logs.otel.{ns}` (deletion also removes all significant events) | Very low |
 | APM ML jobs | Pattern: `apm-{ns}-*` | Very low |
 | SQLite records | Exact `deployment_id` | Very low |
 
@@ -1366,7 +1400,7 @@ Three data views are created with `{scenario_name}` in their display name and sh
 
 | ID | Display name | Delete? |
 | -- | ------------ | ------- |
-| `logs*` | `{scenario_name} Logs` | Yes |
+| `logs.otel.{ns}` | `{scenario_name} Logs` | Yes — namespace-specific, safe to delete |
 | `traces-*` | `{scenario_name} Traces` | Yes |
 | `metrics-*` | `{scenario_name} Metrics` | Yes |
 | `logs-*` | `logs-*` | No — generic OTel view |
@@ -1376,8 +1410,8 @@ Three data views are created with `{scenario_name}` in their display name and sh
 ```
 DELETE /api/data_views/data_view/{id}
 ```
-IDs containing `*` must be URL-encoded: `logs*` → `logs%2A`, `traces-*` → `traces-%2A`.
-Use `urllib.parse.quote(view_id, safe="")` in Python.
+IDs containing `*` must be URL-encoded: `traces-*` → `traces-%2A`, `metrics-*` → `metrics-%2A`.
+Use `urllib.parse.quote(view_id, safe="")` in Python. The Logs data view ID (`logs.otel.{ns}`) contains no `*` and does not need encoding.
 
 ### Teardown step index assignments (`teardown_with_progress`)
 
@@ -1386,7 +1420,7 @@ Use `urllib.parse.quote(view_id, safe="")` in Python.
 | 0 | Stop generators |
 | 1 | Delete workflows |
 | 2 | Delete alert rules |
-| 3 | Delete significant events |
+| 3 | Delete service stream |
 | 4 | Delete AI agent, tools & conversations |
 | 5 | Delete knowledge base |
 | 6 | Delete audit indices |

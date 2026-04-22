@@ -27,7 +27,7 @@ from elastic_config.deployer_slos import SloMixin
 from elastic_config.deployer_workflows import WorkflowsMixin
 from elastic_config.deployer_kb import KbMixin
 from elastic_config.deployer_agent import AgentMixin
-from elastic_config.deployer_events import EventsMixin
+from elastic_config.deployer_streams import StreamsMixin
 from elastic_config.deployer_views import DataViewsMixin
 from elastic_config.deployer_dashboard import DashboardMixin
 from elastic_config.deployer_alerting import AlertingMixin
@@ -45,7 +45,7 @@ class ScenarioDeployer(
     WorkflowsMixin,
     KbMixin,
     AgentMixin,
-    EventsMixin,
+    StreamsMixin,
     DataViewsMixin,
     DashboardMixin,
     AlertingMixin,
@@ -206,8 +206,8 @@ class ScenarioDeployer(
         # Delete agent + tools
         self._cleanup_agent(client)
 
-        # Delete significant events
-        self._cleanup_significant_events(client)
+        # Delete service stream (also removes its significant events)
+        self._delete_stream(client)
 
         # Delete dashboard
         resp = client.post(
@@ -243,7 +243,7 @@ class ScenarioDeployer(
             DeployStep("Stop generators"),              # 0
             DeployStep("Delete workflows"),             # 1
             DeployStep("Delete alert rules"),           # 2
-            DeployStep("Delete significant events"),    # 3
+            DeployStep("Delete service stream"),         # 3
             DeployStep("Delete AI agent, tools & conversations"),  # 4
             DeployStep("Delete knowledge base"),        # 5
             DeployStep("Delete audit indices"),         # 6
@@ -289,14 +289,14 @@ class ScenarioDeployer(
                     step.detail = str(exc)
                 _notify(progress)
 
-                # Step 3: Delete significant events
+                # Step 3: Delete service stream
                 step = progress.steps[3]
                 step.status = "running"
                 _notify(progress)
                 try:
-                    self._cleanup_significant_events(client)
+                    self._delete_stream(client)
                     step.status = "ok"
-                    step.detail = "Stream queries removed"
+                    step.detail = f"Stream logs.otel.{self.ns} deleted"
                 except Exception as exc:
                     step.status = "failed"
                     step.detail = str(exc)

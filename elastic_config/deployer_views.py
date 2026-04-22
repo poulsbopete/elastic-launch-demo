@@ -20,8 +20,8 @@ class DataViewsMixin:
             # Custom view for exec dashboard panels (broad match, no hyphen)
             {
                 "data_view": {
-                    "id": "logs*",
-                    "title": "logs*",
+                    "id": f"logs.otel.{self.ns}",
+                    "title": f"logs.otel.{self.ns},logs.otel.{self.ns}.*,logs-*",
                     "name": f"{self.scenario.scenario_name} Logs",
                     "timeFieldName": "@timestamp",
                 },
