@@ -1212,43 +1212,10 @@ def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str
 
     panels: list[dict] = []
 
-    panels.append(
-        {
-            "type": "DASHBOARD_MARKDOWN",
-            "embeddableConfig": {
-                "content": (
-                    "**Executive metrics** \u2014 blended media, marketplace, and regulated "
-                    "sports-wagering KPIs (synthetic demo streams on `digital-marketplace`). "
-                    "Roadmap: correlate Security Serverless findings (cases) with revenue-at-risk "
-                    "via agent-to-agent enrichment."
-                ),
-            },
-            "panelIndex": "eb_intro",
-            "gridData": {"h": 3, "i": "eb_intro", "w": 48, "x": 0, "y": 0},
-        }
-    )
-
-    kpi_specs = [
-        ("eb_kpi_ad", 0, "Ad revenue (USD / min)", "metrics.business.ad_revenue_usd_per_min"),
-        (
-            "eb_kpi_fill",
-            12,
-            "Programmatic fill rate (%)",
-            "metrics.business.programmatic_fill_rate_pct",
-        ),
-        (
-            "eb_kpi_handle",
-            24,
-            "Betting handle (USD / min)",
-            "metrics.business.betting_handle_usd_per_min",
-        ),
-        ("eb_kpi_hold", 36, "Sportsbook hold (%)", "metrics.business.betting_hold_pct"),
-    ]
-
-    for panel_index, x_off, panel_title, source_field in kpi_specs:
+    def _eb_metric_tile(panel_index: str, x: int, y: int, w: int, title: str, source_field: str):
         lid = uid()
         cid = uid()
-        columns = {cid: col_last_value(source_field, label=panel_title)}
+        columns = {cid: col_average(source_field, label=title)}
         layer = make_layer(lid, [cid], columns, DATA_VIEW_ID_METRICS)
         state = make_state(
             layer,
@@ -1264,111 +1231,235 @@ def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str
         panels.append(
             make_panel(
                 panel_index,
-                {"h": 6, "i": panel_index, "w": 12, "x": x_off, "y": 3},
-                panel_title,
+                {"h": 5, "i": panel_index, "w": w, "x": x, "y": y},
+                title,
                 "lnsMetric",
                 state,
                 [make_ref(DATA_VIEW_ID_METRICS, lid)],
             )
         )
 
-    # Revenue and handle over time (single-service split keeps Lens happy)
-    lid = uid()
-    cid_x = uid()
-    cid_y = uid()
-    cid_split = uid()
-    columns_rev = {
-        cid_x: col_date_histogram("30s"),
-        cid_y: col_average(
-            "metrics.business.ad_revenue_usd_per_min",
-            label="Ad revenue (USD/min)",
-        ),
-        cid_split: col_terms(
-            "resource.attributes.service.name",
-            "Service",
-            size=5,
-            order_col_id=cid_y,
-        ),
-    }
-    layer_rev = make_layer(lid, [cid_x, cid_split, cid_y], columns_rev, DATA_VIEW_ID_METRICS)
-    state_rev = make_state(
-        layer_rev,
-        {
-            "legend": {"isVisible": True, "position": "right"},
-            "valueLabels": "hide",
-            "fittingFunction": "None",
-            "preferredSeriesType": "line",
-            "layers": [
-                {
-                    "layerId": lid,
-                    "layerType": "data",
-                    "seriesType": "line",
-                    "accessors": [cid_y],
-                    "xAccessor": cid_x,
-                    "splitAccessor": cid_split,
-                }
-            ],
-        },
-        query=svc_kql,
-    )
-    panels.append(
-        make_panel(
-            "eb_ts_ad",
-            {"h": 12, "i": "eb_ts_ad", "w": 24, "x": 0, "y": 9},
-            "Ad revenue over time",
-            "lnsXY",
-            state_rev,
-            [make_ref(DATA_VIEW_ID_METRICS, lid)],
+    def _eb_line_chart(panel_index: str, x: int, y: int, w: int, h: int, chart_title: str, metric_field: str, y_label: str):
+        lid = uid()
+        cid_x = uid()
+        cid_y = uid()
+        cid_split = uid()
+        columns = {
+            cid_x: col_date_histogram("30s"),
+            cid_y: col_average(metric_field, label=y_label),
+            cid_split: col_terms(
+                "resource.attributes.service.name",
+                "Service",
+                size=5,
+                order_col_id=cid_y,
+            ),
+        }
+        layer = make_layer(lid, [cid_x, cid_split, cid_y], columns, DATA_VIEW_ID_METRICS)
+        state = make_state(
+            layer,
+            {
+                "legend": {"isVisible": True, "position": "right"},
+                "valueLabels": "hide",
+                "fittingFunction": "None",
+                "preferredSeriesType": "line",
+                "layers": [
+                    {
+                        "layerId": lid,
+                        "layerType": "data",
+                        "seriesType": "line",
+                        "accessors": [cid_y],
+                        "xAccessor": cid_x,
+                        "splitAccessor": cid_split,
+                    }
+                ],
+            },
+            query=svc_kql,
         )
+        panels.append(
+            make_panel(
+                panel_index,
+                {"h": h, "i": panel_index, "w": w, "x": x, "y": y},
+                chart_title,
+                "lnsXY",
+                state,
+                [make_ref(DATA_VIEW_ID_METRICS, lid)],
+            )
+        )
+
+    panels.append(
+        {
+            "type": "DASHBOARD_MARKDOWN",
+            "embeddableConfig": {
+                "content": (
+                    "**Executive leadership view** \u2014 sports media, streaming, fantasy, "
+                    "commerce, sponsorship, and regulated wagering on one screen (synthetic OTLP "
+                    "streams from `digital-marketplace`). Modeled after how a modern sports brand "
+                    "balances audience scale, monetization, and partner revenue."
+                ),
+            },
+            "panelIndex": "eb_intro",
+            "gridData": {"h": 3, "i": "eb_intro", "w": 48, "x": 0, "y": 0},
+        }
     )
 
-    lid2 = uid()
-    cx = uid()
-    cy = uid()
-    cs = uid()
-    columns_bet = {
-        cx: col_date_histogram("30s"),
-        cy: col_average(
-            "metrics.business.betting_handle_usd_per_min",
-            label="Handle (USD/min)",
-        ),
-        cs: col_terms(
-            "resource.attributes.service.name",
-            "Service",
-            size=5,
-            order_col_id=cy,
-        ),
-    }
-    layer_bet = make_layer(lid2, [cx, cs, cy], columns_bet, DATA_VIEW_ID_METRICS)
-    state_bet = make_state(
-        layer_bet,
-        {
-            "legend": {"isVisible": True, "position": "right"},
-            "valueLabels": "hide",
-            "fittingFunction": "None",
-            "preferredSeriesType": "line",
-            "layers": [
-                {
-                    "layerId": lid2,
-                    "layerType": "data",
-                    "seriesType": "line",
-                    "accessors": [cy],
-                    "xAccessor": cx,
-                    "splitAccessor": cs,
-                }
-            ],
-        },
-        query=svc_kql,
-    )
+    # Six-wide KPI rows (48 / 6 = 8) — col_average over the dashboard time window reduces empty tiles
+    kw = 8
+
+    def _kpi_row(y_row: int, specs: list[tuple[str, str]]):
+        for i, (title, field) in enumerate(specs):
+            _eb_metric_tile(f"eb_k_{y_row}_{i}", i * kw, y_row, kw, title, field)
+
     panels.append(
-        make_panel(
-            "eb_ts_bet",
-            {"h": 12, "i": "eb_ts_bet", "w": 24, "x": 24, "y": 9},
-            "Betting handle over time",
-            "lnsXY",
-            state_bet,
-            [make_ref(DATA_VIEW_ID_METRICS, lid2)],
-        )
+        {
+            "type": "DASHBOARD_MARKDOWN",
+            "embeddableConfig": {
+                "content": "**Monetization & wagering** \u2014 ads, subscriptions, handle, and margin",
+            },
+            "panelIndex": "eb_h1",
+            "gridData": {"h": 2, "i": "eb_h1", "w": 48, "x": 0, "y": 3},
+        }
+    )
+    _kpi_row(
+        5,
+        [
+            ("Ad revenue (USD/min)", "metrics.business.ad_revenue_usd_per_min"),
+            ("Programmatic fill (%)", "metrics.business.programmatic_fill_rate_pct"),
+            ("Betting handle (USD/min)", "metrics.business.betting_handle_usd_per_min"),
+            ("Sportsbook hold (%)", "metrics.business.betting_hold_pct"),
+            ("Gross win (USD/min)", "metrics.business.betting_gross_win_usd_per_min"),
+            ("Subscription MRR (USD/min)", "metrics.business.subscription_mrr_usd_per_min"),
+        ],
+    )
+
+    panels.append(
+        {
+            "type": "DASHBOARD_MARKDOWN",
+            "embeddableConfig": {
+                "content": "**Audience & engagement** \u2014 live scale, video, traffic, sessions, fantasy",
+            },
+            "panelIndex": "eb_h2",
+            "gridData": {"h": 2, "i": "eb_h2", "w": 48, "x": 0, "y": 10},
+        }
+    )
+    _kpi_row(
+        12,
+        [
+            ("Live concurrent viewers", "metrics.business.live_concurrent_viewers"),
+            ("Video min engaged / min", "metrics.business.video_minutes_engaged_per_min"),
+            ("Page views / min", "metrics.business.page_views_per_min"),
+            ("App sessions / min", "metrics.business.app_sessions_per_min"),
+            ("Content completion (%)", "metrics.business.content_completion_rate_pct"),
+            ("Fantasy active entries", "metrics.business.fantasy_active_entries"),
+        ],
+    )
+
+    panels.append(
+        {
+            "type": "DASHBOARD_MARKDOWN",
+            "embeddableConfig": {
+                "content": "**Commerce & partners** \u2014 merch, tickets, sponsorship, B2B data",
+            },
+            "panelIndex": "eb_h3",
+            "gridData": {"h": 2, "i": "eb_h3", "w": 48, "x": 0, "y": 17},
+        }
+    )
+    _kpi_row(
+        19,
+        [
+            ("Merch GMV (USD/min)", "metrics.business.merch_gmv_usd_per_min"),
+            ("Live ticketing (USD/min)", "metrics.business.live_event_ticketing_usd_per_min"),
+            ("Partner sponsorship (USD/min)", "metrics.business.partner_sponsorship_usd_per_min"),
+            ("API / data partner (USD/min)", "metrics.business.api_data_partner_revenue_usd_per_min"),
+            ("Sponsored inv. (s/min)", "metrics.business.sponsored_inventory_seconds_per_min"),
+            ("Premium ARPU (USD)", "metrics.business.premium_tier_arpu_usd"),
+        ],
+    )
+
+    panels.append(
+        {
+            "type": "DASHBOARD_MARKDOWN",
+            "embeddableConfig": {
+                "content": "**Marketing & health** \u2014 CRM, loyalty, social, churn & satisfaction proxies",
+            },
+            "panelIndex": "eb_h4",
+            "gridData": {"h": 2, "i": "eb_h4", "w": 48, "x": 0, "y": 24},
+        }
+    )
+    _kpi_row(
+        26,
+        [
+            ("Push CTR (%)", "metrics.business.push_notification_ctr_pct"),
+            ("Newsletter open (%)", "metrics.business.newsletter_open_rate_pct"),
+            ("Loyalty redeem (pts/min)", "metrics.business.loyalty_points_redeemed_per_min"),
+            ("Social clip shares / min", "metrics.business.social_clip_shares_per_min"),
+            ("Churn risk (0\u2013100)", "metrics.business.churn_risk_index_0_100"),
+            ("Satisfaction proxy (NPS-like)", "metrics.business.net_satisfaction_proxy_nps"),
+        ],
+    )
+
+    # Trend charts — leadership scan of money, audience, and commerce
+    y_charts = 31
+    ch = 11
+    w3 = 16
+    _eb_line_chart(
+        "eb_ts_ad",
+        0,
+        y_charts,
+        w3,
+        ch,
+        "Ad revenue trend",
+        "metrics.business.ad_revenue_usd_per_min",
+        "USD/min",
+    )
+    _eb_line_chart(
+        "eb_ts_vid",
+        w3,
+        y_charts,
+        w3,
+        ch,
+        "Video engagement (minutes/min)",
+        "metrics.business.video_minutes_engaged_per_min",
+        "min/min",
+    )
+    _eb_line_chart(
+        "eb_ts_ccv",
+        2 * w3,
+        y_charts,
+        w3,
+        ch,
+        "Live concurrent viewers",
+        "metrics.business.live_concurrent_viewers",
+        "viewers",
+    )
+    _eb_line_chart(
+        "eb_ts_handle",
+        0,
+        y_charts + ch,
+        w3,
+        ch,
+        "Betting handle trend",
+        "metrics.business.betting_handle_usd_per_min",
+        "USD/min",
+    )
+    _eb_line_chart(
+        "eb_ts_mrr",
+        w3,
+        y_charts + ch,
+        w3,
+        ch,
+        "Subscription MRR trend",
+        "metrics.business.subscription_mrr_usd_per_min",
+        "USD/min",
+    )
+    _eb_line_chart(
+        "eb_ts_merch",
+        2 * w3,
+        y_charts + ch,
+        w3,
+        ch,
+        "Merch GMV trend",
+        "metrics.business.merch_gmv_usd_per_min",
+        "USD/min",
     )
 
     all_refs: list[dict] = []
@@ -1384,7 +1475,8 @@ def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str
     dashboard = {
         "attributes": {
             "description": (
-                f"Executive revenue and wagering KPIs for {scenario_name} "
+                f"Executive leadership KPIs for {scenario_name} \u2014 audience, video, "
+                f"subscriptions, commerce, sponsorship, fantasy, wagering, and health proxies "
                 f"(synthetic OTLP gauges from digital-marketplace)."
             ),
             "kibanaSavedObjectMeta": {
