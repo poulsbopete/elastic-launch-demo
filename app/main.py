@@ -841,10 +841,30 @@ async def send_daily_update(body: dict):
 
 @app.get("/api/setup/env-creds")
 async def env_creds_status():
-    """Return whether Elastic credentials are configured via environment variables."""
+    """Whether the selector can launch without manual entry.
+
+    Checks process environment first, then any active persisted deployment
+    (e.g. Fanatics auto-launched at lab start) so a second scenario reuses
+    the same cluster credentials even when systemd did not inject KIBANA_URL.
+    """
+    def_el, def_kb, def_key = _get_default_creds()
+    kibana = (KIBANA_URL or def_kb or "").strip().rstrip("/")
+    api_key = (ELASTIC_API_KEY or def_key or "").strip()
+    has = bool(kibana and api_key)
+    env_ok = bool(KIBANA_URL and ELASTIC_API_KEY)
+    store_ok = bool(def_kb and def_key)
+    if env_ok:
+        cred_source = "environment"
+    elif store_ok:
+        cred_source = "deployment"
+    else:
+        cred_source = "none"
     return {
-        "has_env_creds": bool(KIBANA_URL and ELASTIC_API_KEY),
+        "has_env_creds": has,
         "scenario": ACTIVE_SCENARIO,
+        "cred_source": cred_source,
+        "prefill_kibana_url": kibana if has else "",
+        "prefill_api_key": api_key if has else "",
     }
 
 

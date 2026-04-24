@@ -463,7 +463,7 @@
                 <span style="font-size:18px;">&#128274;</span>
                 <div>
                     <h2 style="margin:0;">Ready to Launch</h2>
-                    <p style="font-size:13px;color:var(--text-dim);margin:4px 0 0;">Connection credentials are pre-configured via environment variables.</p>
+                    <p id="env-launch-hint" style="font-size:13px;color:var(--text-dim);margin:4px 0 0;">Connection credentials are pre-configured for this lab.</p>
                 </div>
             </div>
             <div class="btn-row">
@@ -530,13 +530,7 @@
     const tearingDownIds = new Set();
 
     async function init() {
-        // Check if credentials are pre-configured via .env
-        try {
-            const cfg = await (await fetch('/api/setup/env-creds')).json();
-            envCreds = cfg.has_env_creds || false;
-        } catch (e) {
-            envCreds = false;
-        }
+        await refreshEnvCredsUi();
 
         // Load scenarios
         try {
@@ -547,6 +541,7 @@
 
         // Load active deployments
         await refreshDeployments();
+        await refreshEnvCredsUi();
 
         renderScenarios();
 
@@ -684,6 +679,40 @@
                 if (!otlp.endsWith(':443')) otlp += ':443';
                 otlpInput.value = otlp;
             }
+        }
+    }
+
+    function applyEnvCredsCfg(cfg) {
+        envCreds = cfg.has_env_creds || false;
+        const hint = document.getElementById('env-launch-hint');
+        if (hint) {
+            if (cfg.cred_source === 'deployment') {
+                hint.textContent = 'Reusing the Kibana URL and API key from an active deployment in this lab (same Elastic project).';
+            } else if (cfg.cred_source === 'environment') {
+                hint.textContent = 'Connection credentials are pre-configured for this lab.';
+            } else {
+                hint.textContent = 'Connection credentials are pre-configured for this lab.';
+            }
+        }
+        if (cfg.prefill_kibana_url) {
+            const kb = document.getElementById('kibana-url');
+            if (kb) {
+                kb.value = cfg.prefill_kibana_url;
+                deriveUrls();
+            }
+        }
+        if (cfg.prefill_api_key) {
+            const ak = document.getElementById('api-key');
+            if (ak) ak.value = cfg.prefill_api_key;
+        }
+    }
+
+    async function refreshEnvCredsUi() {
+        try {
+            const cfg = await (await fetch('/api/setup/env-creds')).json();
+            applyEnvCredsCfg(cfg);
+        } catch (e) {
+            envCreds = false;
         }
     }
 
@@ -899,6 +928,9 @@
                     document.getElementById('env-launch-panel').style.display = 'none';
                     document.getElementById('connection-panel').classList.remove('visible');
                     refreshDeployments();
+                    refreshEnvCredsUi().then(() => {
+                        if (selectedScenario) selectScenario(selectedScenario);
+                    });
                     removeProgressPanel(panelId, 3000);
                 }
                 return;
@@ -989,6 +1021,9 @@
                 tearingDownIds.delete(deploymentId);
                 panel.querySelector('h2').textContent = scenarioName + ' removed';
                 refreshDeployments();
+                refreshEnvCredsUi().then(() => {
+                    if (selectedScenario) selectScenario(selectedScenario);
+                });
                 removeProgressPanel(panelId, 3000);
                 return;
             }

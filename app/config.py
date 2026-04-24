@@ -54,12 +54,13 @@ ACTIVE_SCENARIO = ACTIVE_SCENARIO_LIST[0] if ACTIVE_SCENARIO_LIST else "space"
 # ── Auto-deploy Credentials (optional) ───────────────────────────────────────
 # If set, the app will automatically deploy ACTIVE_SCENARIO_LIST on startup
 # without requiring manual input via the UI.
-KIBANA_URL = os.getenv("KIBANA_URL", "")
+# Instruqt / setup scripts may expose Kibana as ES_KIBANA_URL; API key as ELASTICSEARCH_API_KEY.
+KIBANA_URL = os.getenv("KIBANA_URL", "") or os.getenv("ES_KIBANA_URL", "")
 _kibana_proxy_raw = os.getenv("KIBANA_PROXY", "").strip().rstrip("/")
 if _kibana_proxy_raw and not _kibana_proxy_raw.startswith(("http://", "https://")):
     _kibana_proxy_raw = "https://" + _kibana_proxy_raw
 KIBANA_PROXY = _kibana_proxy_raw
-ELASTIC_API_KEY = os.getenv("ELASTIC_API_KEY", "")
+ELASTIC_API_KEY = os.getenv("ELASTIC_API_KEY", "") or os.getenv("ELASTICSEARCH_API_KEY", "")
 ELASTIC_URL = os.getenv("ELASTIC_URL", "")
 
 from scenarios import get_scenario  # noqa: E402

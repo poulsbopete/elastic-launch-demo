@@ -713,14 +713,16 @@ Use `{p_escalation_action}` with:
 - `severity` — `"advisory"`, `"caution"`, `"warning"`, or `"critical"`
 - `justification` — investigation summary
 
-## HITL Channels (1–15)
+## Significant event alerts (all fault channels)
+
+When alert rules fire, the deployed auto-remediation workflow may run investigation and
+execute remediation for **any** fault channel (CH01–CH20). That path is driven by Elastic
+workflows, not by this chat session.
+
+## Interactive chat (this conversation)
 
 State your remediation recommendation and wait for explicit user approval before acting.
-Do NOT execute remediation based on the RCA alone.
-
-## Auto-Remediate Channels (16–20)
-
-These channels may be remediated without explicit user approval when the workflow requests it.
+Do NOT execute remediation based on the RCA alone unless the user explicitly asks you to.
 """
         return {
             "id": f"{ns}-remediation-guide",

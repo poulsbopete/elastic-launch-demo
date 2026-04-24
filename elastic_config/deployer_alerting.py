@@ -61,7 +61,10 @@ class AlertingMixin:
             return
 
         if not auto_remediate_wf_id:
-            logger.warning("Auto-remediate workflow not found; channels 16-20 will use HITL workflow")
+            logger.warning(
+                "Auto-remediate workflow not found; all channels will use the HITL "
+                "notification workflow until it is deployed"
+            )
 
         # Clean old rules
         self._cleanup_alerts(client)
@@ -69,6 +72,9 @@ class AlertingMixin:
         # Create 20 alert rules
         registry = self.scenario.channel_registry
         step.items_total = len(registry)
+        # When the auto-remediate workflow exists, attach it to every fault channel so
+        # significant events consistently drive investigation + remediation for all verticals.
+        has_auto_wf = bool(auto_remediate_wf_id)
 
         for ch_num, ch_data in sorted(registry.items()):
             num_str = f"{int(ch_num):02d}"
@@ -85,9 +91,7 @@ class AlertingMixin:
             else:
                 severity = "medium"
 
-            # Channels 16-20 use auto-remediation; 1-15 remain HITL
-            auto_remediate = ch_int >= 16
-            if auto_remediate:
+            if has_auto_wf:
                 rule_name = f"{self.scenario.scenario_name} CH{num_str}: {name} (Auto-Remediate)"
             else:
                 rule_name = f"{self.scenario.scenario_name} CH{num_str}: {name}"
@@ -108,12 +112,12 @@ class AlertingMixin:
                 "name": rule_name,
                 "rule_type_id": ".es-query",
                 "consumer": "alerts",
-                # For auto-remediate channels, encode action_type (tags[2]) and channel
+                # For auto-remediate workflow, encode action_type (tags[2]) and channel
                 # number (tags[3]) in tags — workflow inputs from alert actions resolve blank,
                 # so all per-channel data needed by the workflow must live in tags.
                 "tags": (
                     [self.ns, error_type, ch_data.get("remediation_action", ""), str(ch_int)]
-                    if auto_remediate
+                    if has_auto_wf
                     else [self.ns, error_type]
                 ),
                 "schedule": {"interval": "1m"},
@@ -139,7 +143,9 @@ class AlertingMixin:
                     "params": {
                         "subAction": "run",
                         "subActionParams": {
-                            "workflowId": (auto_remediate_wf_id or notification_wf_id) if auto_remediate else notification_wf_id,
+                            "workflowId": (auto_remediate_wf_id or notification_wf_id)
+                            if has_auto_wf
+                            else notification_wf_id,
                             "inputs": {
                                 "channel": ch_int,
                                 "error_type": error_type,
