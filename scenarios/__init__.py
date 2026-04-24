@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +16,8 @@ logger = logging.getLogger("scenarios")
 _registry: dict[str, BaseScenario] = {}
 _loaded = False
 
+_SCENARIOS_DIR = Path(__file__).parent
+
 
 def _discover() -> None:
     """Auto-discover all scenario modules under scenarios/*/scenario.py."""
@@ -22,18 +25,9 @@ def _discover() -> None:
     if _loaded:
         return
 
-    # Known scenario modules — add new scenarios here
-    _scenario_modules = [
-        "scenarios.space.scenario",
-        "scenarios.fanatics.scenario",
-        "scenarios.financial.scenario",
-        "scenarios.healthcare.scenario",
-        "scenarios.gaming.scenario",
-        "scenarios.banking.scenario",
-        "scenarios.gcp.scenario",
-    ]
-
-    for mod_path in _scenario_modules:
+    for scenario_file in sorted(_SCENARIOS_DIR.glob("*/scenario.py")):
+        pkg = scenario_file.parent.name
+        mod_path = f"scenarios.{pkg}.scenario"
         try:
             mod = importlib.import_module(mod_path)
             scenario = mod.scenario  # Each module exposes a `scenario` instance
@@ -64,5 +58,5 @@ def list_scenarios() -> list[dict[str, str]]:
             "description": s.scenario_description,
             "namespace": s.namespace,
         }
-        for s in _registry.values()
+        for s in sorted(_registry.values(), key=lambda s: s.sort_order)
     ]

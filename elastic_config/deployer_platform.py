@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 import httpx
 
-from elastic_config.deployer_base import _kibana_headers, ProgressCallback
+from elastic_config.deployer_base import _kibana_headers, _es_headers, ProgressCallback
+
+_SECURITY_DIR = Path(__file__).parent / "security"
 
 
 class PlatformMixin:
 
     def _configure_platform_settings(self, client: httpx.Client, notify: ProgressCallback):
-        """Enable wired streams, significant events, and agent builder."""
+        """Enable wired streams, significant events, agent builder, and AI docs."""
         step = self._step(4)
         step.status = "running"
         notify(self.progress)
@@ -71,7 +77,21 @@ class PlatformMixin:
         except Exception as exc:
             errors.append(f"agent builder ({exc})")
 
-        # 4. Enable workflows UI
+        # 4. Install Elastic product documentation (for AI assistant context)
+        try:
+            resp = client.post(
+                f"{self.kibana_url}/internal/product_doc_base/install",
+                headers=_kibana_headers(self.api_key),
+                json={"inferenceId": ".elser-2-elasticsearch", "resourceType": "product_doc"},
+            )
+            if resp.status_code < 300:
+                configured.append("AI docs")
+            else:
+                errors.append(f"AI docs (HTTP {resp.status_code})")
+        except Exception as exc:
+            errors.append(f"AI docs ({exc})")
+
+        # 5. Enable workflows UI
         try:
             resp = client.post(
                 f"{self.kibana_url}/internal/kibana/settings",
@@ -84,6 +104,43 @@ class PlatformMixin:
                 errors.append(f"workflows UI (HTTP {resp.status_code})")
         except Exception as exc:
             errors.append(f"workflows UI ({exc})")
+
+        # 6 & 7. Create viewer-custom role and guest user (only when KIBANA_RO_PASSWORD is set)
+        ro_password = os.getenv("KIBANA_RO_PASSWORD", "").strip()
+        if ro_password:
+            try:
+                role_body = json.loads(
+                    (_SECURITY_DIR / "roles" / "viewer-custom.json").read_text()
+                )
+                role_body.pop("transient_metadata", None)
+                resp = client.put(
+                    f"{self.elastic_url}/_security/role/viewer-custom",
+                    headers=_es_headers(self.api_key),
+                    json=role_body,
+                )
+                if resp.status_code < 300:
+                    configured.append("viewer-custom role")
+                else:
+                    errors.append(f"viewer-custom role (HTTP {resp.status_code})")
+            except Exception as exc:
+                errors.append(f"viewer-custom role ({exc})")
+
+            try:
+                user_body = json.loads(
+                    (_SECURITY_DIR / "users" / "guest.json").read_text()
+                )
+                user_body["password"] = ro_password
+                resp = client.put(
+                    f"{self.elastic_url}/_security/user/guest",
+                    headers=_es_headers(self.api_key),
+                    json=user_body,
+                )
+                if resp.status_code < 300:
+                    configured.append("guest user")
+                else:
+                    errors.append(f"guest user (HTTP {resp.status_code})")
+            except Exception as exc:
+                errors.append(f"guest user ({exc})")
 
         if configured:
             step.status = "ok"

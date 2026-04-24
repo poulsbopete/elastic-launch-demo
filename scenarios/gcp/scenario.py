@@ -35,6 +35,10 @@ class GCPScenario(BaseScenario):
     def namespace(self) -> str:
         return "gcpnet"
 
+    @property
+    def sort_order(self) -> int:
+        return 7
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

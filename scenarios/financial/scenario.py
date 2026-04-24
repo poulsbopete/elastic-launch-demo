@@ -35,6 +35,10 @@ class FinancialScenario(BaseScenario):
     def namespace(self) -> str:
         return "finserv"
 
+    @property
+    def sort_order(self) -> int:
+        return 3
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

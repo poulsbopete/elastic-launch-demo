@@ -371,6 +371,9 @@ def _build_dashboard_ndjson(
     error_types: "list[str] | None" = None,
 ) -> str:
     """Build the full dashboard NDJSON from parameters."""
+    # Override the module-level constant so panels reference the deployed data view
+    DATA_VIEW_ID_LOGS = f"logs.otel.{namespace}"
+
     TILE_WIDTH = 5
 
     panels = []
@@ -1070,7 +1073,7 @@ def _build_dashboard_ndjson(
         esql_where = 'severity_text == "ERROR"'
 
     esql_query = (
-        f"FROM logs.otel,logs.otel.* "
+        f"FROM logs.otel.{namespace},logs.otel.{namespace}.* "
         f"| WHERE {esql_where} "
         f"| KEEP body.text, trace.id, span.id, service.name, @timestamp "
         f"| SORT @timestamp DESC "

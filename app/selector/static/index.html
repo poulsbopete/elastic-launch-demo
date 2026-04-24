@@ -363,14 +363,15 @@
         .conn-check.conn-ok  { color: var(--green); }
         .conn-check.conn-fail { color: var(--red); }
 
-        /* Progress Panel */
-        .progress-panel {
-            padding: 0 40px 40px;
+        /* Progress Panels */
+        #progress-panels-container {
+            padding: 0 40px;
             max-width: 1200px;
             margin: 0 auto;
-            display: none;
         }
-        .progress-panel.visible { display: block; }
+        .progress-panel {
+            margin-bottom: 16px;
+        }
         .progress-inner {
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -513,13 +514,8 @@
         </div>
     </div>
 
-    <!-- Progress Panel -->
-    <div class="progress-panel" id="progress-panel">
-        <div class="progress-inner">
-            <h2>Deployment Progress</h2>
-            <div id="progress-steps"></div>
-        </div>
-    </div>
+    <!-- Progress Panels Container -->
+    <div id="progress-panels-container"></div>
 
     <div class="footer">
         Powered by <a href="https://elastic.co" target="_blank">Elastic</a> Observability
@@ -538,6 +534,7 @@
     let selectedScenario = null;
     let activeDeployments = [];
     let envCreds = false;
+    const tearingDownIds = new Set();
 
     async function init() {
         // Check if credentials are pre-configured via .env
@@ -560,14 +557,28 @@
 
         renderScenarios();
 
-        // If an env-var auto-deploy is in progress, show the progress panel immediately
+        // Resume any deployments that were in progress before a page refresh
         try {
-            const status = await (await fetch('/api/setup/auto-deploy')).json();
-            if (status.in_progress && status.deployment_id) {
-                const progressPanel = document.getElementById('progress-panel');
-                progressPanel.classList.add('visible');
-                progressPanel.querySelector('h2').textContent = 'Auto-deploying ' + status.deployment_id + '…';
-                pollProgress(status.deployment_id);
+            const status = await (await fetch('/api/setup/active-deploys')).json();
+            for (const dep of (status.deployments || [])) {
+                const panelId = 'progress-panel-deploy-' + dep.deployment_id;
+                if (!document.getElementById(panelId)) {
+                    createProgressPanel(panelId, 'Deploying ' + dep.scenario_name + '…');
+                    pollProgress(dep.deployment_id);
+                }
+            }
+        } catch (e) {}
+
+        // Resume any teardowns that were running before a page refresh
+        try {
+            const tdStatus = await (await fetch('/api/setup/active-teardowns')).json();
+            for (const td of (tdStatus.teardowns || [])) {
+                tearingDownIds.add(td.deployment_id);
+                createProgressPanel('progress-panel-teardown-' + td.deployment_id, 'Removing ' + td.scenario_name + '…');
+                pollTeardownProgress(td.deployment_id, td.scenario_name);
+            }
+            if (tdStatus.teardowns && tdStatus.teardowns.length > 0) {
+                renderDeploymentsBanner();
             }
         } catch (e) {}
     }
@@ -613,9 +624,10 @@
                 <div style="display: flex; gap: 10px; align-items: center;">
 <a href="${d.kibana_display_url}/app/dashboards#/view/${d.namespace}-exec-dashboard" target="_blank" rel="noopener" style="background: var(--teal); color: #000; border: 1px solid var(--teal); border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; text-decoration: none;">Executive Dashboard</a>
                     <a href="/chaos?deployment_id=${d.deployment_id}" style="background: var(--amber); color: #000; border: 1px solid var(--amber); border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; text-decoration: none;">Chaos</a>
-                    <button onclick="stopAndTeardown('${d.deployment_id}')" style="background: var(--red); color: #fff;
-                            border: none; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600;
-                            cursor: pointer; font-family: inherit;">Stop &amp; Teardown</button>
+                    ${tearingDownIds.has(d.deployment_id)
+                        ? `<button disabled style="background: rgba(248,81,73,0.25); color: rgba(255,255,255,0.4); border: none; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: not-allowed; font-family: inherit;">Removing…</button>`
+                        : `<button onclick="stopAndTeardown('${d.deployment_id}')" style="background: var(--red); color: #fff; border: none; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;">Stop &amp; Teardown</button>`
+                    }
                 </div>
             </div>
         `).join('');
@@ -820,8 +832,11 @@
                 return;
             }
 
-            document.getElementById('progress-panel').classList.add('visible');
-            pollProgress(data.deployment_id || selectedScenario);
+            const deployId = data.deployment_id || selectedScenario;
+            const scenarioObj = scenarios.find(s => s.id === selectedScenario);
+            const scenarioLabel = scenarioObj ? scenarioObj.name : selectedScenario;
+            createProgressPanel('progress-panel-deploy-' + deployId, 'Deploying ' + scenarioLabel + '…');
+            pollProgress(deployId);
         } catch (e) {
             const msg = document.getElementById(statusMsgId);
             msg.textContent = 'Launch error: ' + e.message;
@@ -831,14 +846,30 @@
         }
     }
 
-    function renderProgress(data) {
-        const container = document.getElementById('progress-steps');
+    function createProgressPanel(panelId, title) {
+        const container = document.getElementById('progress-panels-container');
+        const panel = document.createElement('div');
+        panel.className = 'progress-panel';
+        panel.id = panelId;
+        panel.innerHTML = `<div class="progress-inner"><h2>${title}</h2><div class="progress-steps-inner"><div class="progress-step"><span class="step-icon running"><span class="spinner"></span></span><span class="step-name">Starting...</span></div></div></div>`;
+        container.appendChild(panel);
+        return panel;
+    }
+
+    function removeProgressPanel(panelId, delay = 0) {
+        setTimeout(() => {
+            const panel = document.getElementById(panelId);
+            if (panel) panel.remove();
+        }, delay);
+    }
+
+    function renderProgress(data, stepsContainer) {
         if (!data.steps || data.steps.length === 0) {
-            container.innerHTML = '<div class="progress-step"><span class="step-icon running"><span class="spinner"></span></span><span class="step-name">Starting deployment...</span></div>';
+            stepsContainer.innerHTML = '<div class="progress-step"><span class="step-icon running"><span class="spinner"></span></span><span class="step-name">Starting...</span></div>';
             return;
         }
 
-        container.innerHTML = data.steps.map(s => {
+        stepsContainer.innerHTML = data.steps.map(s => {
             let icon = '';
             switch (s.status) {
                 case 'ok': icon = '<span class="step-icon ok">&#10003;</span>'; break;
@@ -854,22 +885,29 @@
     }
 
     async function pollProgress(deploymentId) {
+        const panelId = 'progress-panel-deploy-' + deploymentId;
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        const stepsContainer = panel.querySelector('.progress-steps-inner');
+
         try {
             const url = deploymentId ? '/api/setup/progress?deployment_id=' + deploymentId : '/api/setup/progress';
             const resp = await fetch(url);
             const data = await resp.json();
-            renderProgress(data);
+            renderProgress(data, stepsContainer);
 
             if (data.finished) {
                 const launchBtnId = envCreds ? 'env-launch-btn' : 'launch-btn';
                 const launchBtn = document.getElementById(launchBtnId);
                 if (data.error) {
+                    panel.querySelector('h2').textContent += ' — Failed';
                     launchBtn.textContent = 'Retry';
                     launchBtn.disabled = false;
                 } else {
                     document.getElementById('env-launch-panel').style.display = 'none';
                     document.getElementById('connection-panel').classList.remove('visible');
                     refreshDeployments();
+                    removeProgressPanel(panelId, 3000);
                 }
                 return;
             }
@@ -902,16 +940,13 @@
         const scenarioName = dep ? dep.scenario_name : deploymentId;
         if (!await showConfirm('Stop generators and remove artifacts for <strong>' + scenarioName + '</strong>?')) return;
 
-        // Disable the teardown button to prevent double-clicks
-        const btns = document.querySelectorAll('button[onclick*="stopAndTeardown"]');
-        btns.forEach(b => { if (b.textContent.includes('Teardown')) b.disabled = true; });
+        // Grey out only this deployment's button immediately
+        tearingDownIds.add(deploymentId);
+        renderDeploymentsBanner();
 
-        // Show progress panel with teardown heading
-        const progressPanel = document.getElementById('progress-panel');
-        progressPanel.classList.add('visible');
-        progressPanel.querySelector('h2').textContent = 'Removing ' + scenarioName + '...';
-        document.getElementById('progress-steps').innerHTML =
-            '<div class="progress-step"><span class="step-icon running"><span class="spinner"></span></span><span class="step-name">Starting teardown...</span></div>';
+        // Create a dedicated progress panel for this teardown
+        const panelId = 'progress-panel-teardown-' + deploymentId;
+        createProgressPanel(panelId, 'Removing ' + scenarioName + '…');
 
         // Hide connection panel so progress is prominent
         document.getElementById('connection-panel').classList.remove('visible');
@@ -927,36 +962,42 @@
                 pollTeardownProgress(deploymentId, scenarioName);
             } else if (data.ok) {
                 // Legacy sync response (no credentials case)
-                progressPanel.classList.remove('visible');
+                tearingDownIds.delete(deploymentId);
+                removeProgressPanel(panelId);
                 const msg = document.getElementById('status-msg');
                 msg.textContent = 'Teardown complete for ' + scenarioName;
                 msg.className = 'status-msg visible ok';
                 refreshDeployments();
             } else {
-                progressPanel.classList.remove('visible');
+                tearingDownIds.delete(deploymentId);
+                removeProgressPanel(panelId);
+                renderDeploymentsBanner();
                 alert('Teardown failed: ' + (data.error || 'Unknown error'));
             }
         } catch (e) {
-            progressPanel.classList.remove('visible');
+            tearingDownIds.delete(deploymentId);
+            removeProgressPanel(panelId);
+            renderDeploymentsBanner();
             alert('Teardown error: ' + e.message);
         }
     }
 
     async function pollTeardownProgress(deploymentId, scenarioName) {
+        const panelId = 'progress-panel-teardown-' + deploymentId;
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        const stepsContainer = panel.querySelector('.progress-steps-inner');
+
         try {
             const resp = await fetch('/api/setup/teardown-progress?deployment_id=' + deploymentId);
             const data = await resp.json();
-            renderProgress(data);
+            renderProgress(data, stepsContainer);
 
             if (data.finished) {
-                const progressPanel = document.getElementById('progress-panel');
-                progressPanel.querySelector('h2').textContent = scenarioName + ' removed';
+                tearingDownIds.delete(deploymentId);
+                panel.querySelector('h2').textContent = scenarioName + ' removed';
                 refreshDeployments();
-                // Hide progress after a short delay
-                setTimeout(() => {
-                    progressPanel.classList.remove('visible');
-                    progressPanel.querySelector('h2').textContent = 'Deployment Progress';
-                }, 3000);
+                removeProgressPanel(panelId, 3000);
                 return;
             }
         } catch (e) {}

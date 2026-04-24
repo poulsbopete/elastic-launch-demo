@@ -44,7 +44,8 @@ class AgentMixin:
                     "configuration": {"workflow_id": wf_id},
                 })
 
-        step.items_total = len(tools)
+        skill_defs = self.scenario.skill_definitions
+        step.items_total = len(tools) + len(skill_defs)
 
         for tool_def in tools:
             tool_id = tool_def["id"]
@@ -67,6 +68,8 @@ class AgentMixin:
                 logger.warning("Tool %s failed: %s", tool_id, resp.text[:200])
             notify(self.progress)
 
+        self._deploy_skills(client, notify)
+
         step.status = "ok" if step.items_done > 0 else "failed"
         notify(self.progress)
 
@@ -83,19 +86,28 @@ class AgentMixin:
 
         # Use only tools that were actually created successfully (Bug 4+5 fix)
         tool_ids = list(self._created_tool_ids)
-        tool_ids.append("platform.core.cases")
+        tool_ids.extend([
+            "platform.core.cases",
+            "platform.core.resume_workflow_execution",
+            "platform.core.get_workflow_execution_status",
+            "platform.core.create_visualization",
+        ])
 
-        agent_body = {
+        configuration: dict[str, Any] = {
+            "instructions": system_prompt,
+            "tools": [{"tool_ids": tool_ids}],
+        }
+        if self._created_skill_ids:
+            configuration["skill_ids"] = self._created_skill_ids
+
+        agent_body: dict[str, Any] = {
             "id": agent_id,
             "name": f"{self.scenario.scenario_name}: {agent_cfg.get('name', 'Analyst')}",
             "description": agent_cfg.get(
                 "description",
                 f"AI-powered analyst for {self.scenario.scenario_name}.",
             ),
-            "configuration": {
-                "instructions": system_prompt,
-                "tools": [{"tool_ids": tool_ids}],
-            },
+            "configuration": configuration,
         }
 
         # DELETE + POST for reliable update
@@ -140,18 +152,10 @@ class AgentMixin:
             f"an expert AI agent embedded in the Elastic observability platform."
         )
 
-        # Scenario-specific assessment tool name (prefixed so it matches the registered tool ID)
-        assessment_tool = scenario.prefixed_tool_id(agent_cfg.get(
-            "assessment_tool_name",
-            scenario.assessment_tool_config.get("id", "operational_assessment"),
-        ))
-        p_search_error_logs       = scenario.prefixed_tool_id("search_error_logs")
-        p_search_service_logs     = scenario.prefixed_tool_id("search_service_logs")
-        p_browse_recent_errors    = scenario.prefixed_tool_id("browse_recent_errors")
-        p_search_subsystem_health = scenario.prefixed_tool_id("search_subsystem_health")
-        p_search_known_anomalies  = scenario.prefixed_tool_id("search_known_anomalies")
-        p_trace_anomaly           = scenario.prefixed_tool_id("trace_anomaly_propagation")
-        p_remediation_action      = scenario.prefixed_tool_id("remediation_action")
+        ns = scenario.namespace
+        p_investigation = f"{ns}-investigation-playbook"
+        p_channel_runbook = f"{ns}-channel-runbook"
+        p_remediation_guide = f"{ns}-remediation-guide"
 
         return f"""{identity}
 
@@ -165,43 +169,14 @@ class AgentMixin:
 - **Fault Channels**: 20 distinct anomaly channels covering all subsystems
 - **Telemetry Source**: OpenTelemetry -> Elasticsearch (logs)
 
-## CRITICAL: Field Names
-- Log message field is `body.text` — NEVER use `body` alone (causes "Unknown column [body]")
-- NEVER use `message` — this field DOES NOT EXIST. The correct field is `body.text`
-- Service name field is `service.name`
-- Always query FROM logs.otel,logs.otel.* (includes sub-streams)
-- Use LIKE or KQL() for text matching — NEVER use MATCH()
-
-## Tool Selection Guide
-1. **Known error type** → `{p_search_error_logs}` — parameterized, correct fields
-2. **Specific service** → `{p_search_service_logs}` — parameterized, correct fields
-3. **General awareness** → `{p_browse_recent_errors}` or `{p_search_subsystem_health}`
-4. **Historical patterns** → `{p_search_known_anomalies}` — knowledge base lookup
-5. **Cascade analysis** → `{p_trace_anomaly}` — cross-service correlation
-6. **Operational readiness** → `{assessment_tool}` — overall system health evaluation
-Do NOT write custom ES|QL queries. Use the parameterized tools.
-
-## Root Cause Analysis Methodology
-1. **Identify the Event**: Determine which channel(s) triggered and the error signature
-2. **Scope the Blast Radius**: Identify affected and cascade services
-3. **Temporal Correlation**: Find first occurrence, correlate with preceding events
-4. **Cross-Cloud Tracing**: Trace propagation across AWS, GCP, and Azure
-5. **Subsystem Impact**: Evaluate if fault is isolated or propagating
-6. **Known Pattern Matching**: Check knowledge base for similar anomalies
-7. **Severity Classification**: ADVISORY, CAUTION, WARNING, or CRITICAL
-8. **Remediation**: When the user asks you to remediate, look up the recommended remediation_action from the knowledge base entry for that channel. Use the `{p_remediation_action}` tool with the appropriate action_type and the affected channel number. IMPORTANT: if you fetched a specific case earlier in the conversation (e.g. via platform.core.cases), always pass that case's `id` as the `case_id` parameter so the workflow closes the correct case — never rely on the tag search to find it. Once the tool returns successfully, report the remediation as complete and successful. Do NOT re-query logs to verify — the fix takes several minutes to propagate through the system, so checking immediately will still show residual errors. Do NOT execute remediation unless the user explicitly asks you to.
+## Skills
+- Use **{p_investigation}** for ES|QL investigation, field name guidance, and root cause analysis
+- Use **{p_channel_runbook}** to look up fault channel procedures or identify the remediation action_type
+- Use **{p_remediation_guide}** before executing any remediation or escalation action
+- Use **visualization-creation** to create charts, graphs, or visual breakdowns of data
 
 ## Available Services
-{svc_names}
-
-## Response Format
-1. **Summary** — One-sentence description
-2. **Affected Systems** — Impacted services and subsystems
-3. **Root Cause** — Underlying cause determination
-4. **Evidence** — Specific log entries, timestamps, field values
-5. **Cascade Risk** — Propagation assessment
-6. **Recommendation** — Prioritized remediation steps
-7. **Confidence** — HIGH/MEDIUM/LOW with reasoning"""
+{svc_names}"""
 
     def _cleanup_conversations(self, client: httpx.Client) -> int:
         """Delete all Agent Builder conversations belonging to the scenario's agent."""
@@ -228,10 +203,12 @@ Do NOT write custom ES|QL queries. Use the parameterized tools.
         return deleted
 
     def _cleanup_agent(self, client: httpx.Client) -> int:
-        """Delete agent, custom tools, and conversations. Returns conversation count deleted."""
+        """Delete agent, custom tools, skills, and conversations. Returns conversation count deleted."""
         agent_id = self.scenario.agent_config.get("id", f"{self.ns}-analyst")
         # Delete conversations before removing the agent
         deleted_convs = self._cleanup_conversations(client)
+        # Delete custom skills before removing the agent (avoid 409 Conflict)
+        self._cleanup_skills(client)
         client.delete(
             f"{self.kibana_url}/api/agent_builder/agents/{agent_id}",
             headers=_kibana_headers(self.api_key),

@@ -35,6 +35,10 @@ class FanaticsScenario(BaseScenario):
     def namespace(self) -> str:
         return "fanatics"
 
+    @property
+    def sort_order(self) -> int:
+        return 2
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

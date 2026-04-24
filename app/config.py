@@ -39,12 +39,20 @@ APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 CHANNEL_TIMEOUT = int(os.getenv("CHANNEL_TIMEOUT", "3600"))
 
 # ── Active Scenario ───────────────────────────────────────────────────────
-ACTIVE_SCENARIO = os.getenv("ACTIVE_SCENARIO", "space")
+_active_scenario_raw = os.getenv("ACTIVE_SCENARIO", "")
 # True only when ACTIVE_SCENARIO is explicitly provided via the environment.
-ACTIVE_SCENARIO_SET = bool(os.getenv("ACTIVE_SCENARIO"))
+ACTIVE_SCENARIO_SET = bool(_active_scenario_raw)
+# Support comma-separated list; e.g. "space, fanatics" auto-deploys both.
+ACTIVE_SCENARIO_LIST: list[str] = (
+    [s.strip() for s in _active_scenario_raw.split(",") if s.strip()]
+    if _active_scenario_raw
+    else []
+)
+# Primary scenario (first in list, or "space" as the default fallback).
+ACTIVE_SCENARIO = ACTIVE_SCENARIO_LIST[0] if ACTIVE_SCENARIO_LIST else "space"
 
 # ── Auto-deploy Credentials (optional) ───────────────────────────────────────
-# If set, the app will automatically deploy ACTIVE_SCENARIO on startup
+# If set, the app will automatically deploy ACTIVE_SCENARIO_LIST on startup
 # without requiring manual input via the UI.
 KIBANA_URL = os.getenv("KIBANA_URL", "")
 _kibana_proxy_raw = os.getenv("KIBANA_PROXY", "").strip().rstrip("/")

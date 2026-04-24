@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import (
     ACTIVE_SCENARIO,
+    ACTIVE_SCENARIO_LIST,
     ACTIVE_SCENARIO_SET,
     APP_HOST,
     APP_PORT,
@@ -98,17 +99,15 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to restore deployment %s", rec["deployment_id"])
             store.set_status(rec["deployment_id"], "error")
 
-    # Auto-deploy from environment variables if credentials AND an explicit
-    # scenario are provided, and the scenario is not already running from a
-    # restored SQLite record.
-    if KIBANA_URL and ELASTIC_API_KEY and ACTIVE_SCENARIO_SET and not registry.get(ACTIVE_SCENARIO):
+    # Auto-deploy from environment variables if credentials AND at least one
+    # explicit scenario are provided.  Scenarios already running (restored from
+    # SQLite) are skipped.
+    if KIBANA_URL and ELASTIC_API_KEY and ACTIVE_SCENARIO_SET:
         import threading
         from elastic_config.deployer import ScenarioDeployer
 
-        scenario_id = ACTIVE_SCENARIO
         kibana_url = KIBANA_URL.strip().rstrip("/")
         api_key = ELASTIC_API_KEY.strip()
-
         elastic_url = _derive_elastic_url(kibana_url, api_key, explicit=ELASTIC_URL)
 
         # Pre-compute an OTLP URL from the ES URL as a last-resort fallback.
@@ -121,63 +120,75 @@ async def lifespan(app: FastAPI):
             if not _pre_derived_otlp.endswith(":443"):
                 _pre_derived_otlp += ":443"
 
-        logger.info(
-            "Auto-deploy triggered from environment variables (scenario=%s)",
-            scenario_id,
-        )
+        def _make_auto_deploy(dep_id, s_id, _scenario, _deployer):
+            """Factory that binds per-scenario variables for each deploy thread."""
+            _scenario_name = _scenario.scenario_name
 
-        scenario = get_scenario(scenario_id)
-        deployer = ScenarioDeployer(scenario, elastic_url, kibana_url, api_key, KIBANA_PROXY)
-        deployment_id = scenario_id
+            def _progress_cb(progress):
+                d = progress.to_dict()
+                d["scenario_name"] = _scenario_name
+                _deploy_progress[dep_id] = d
+                steps = d.get("steps") or []
+                if steps:
+                    last = steps[-1]
+                    logger.info(
+                        "[auto-deploy:%s] %s — %s%s",
+                        dep_id,
+                        last.get("name", ""),
+                        last.get("status", ""),
+                        f" ({last['detail']})" if last.get("detail") else "",
+                    )
 
-        def _progress_cb(progress):
-            d = progress.to_dict()
-            _deploy_progress[deployment_id] = d
-            # Log the most recent step so progress is visible in container logs
-            steps = d.get("steps") or []
-            if steps:
-                last = steps[-1]
-                logger.info(
-                    "[auto-deploy:%s] %s — %s%s",
-                    deployment_id,
-                    last.get("name", ""),
-                    last.get("status", ""),
-                    f" ({last['detail']})" if last.get("detail") else "",
-                )
+            def _auto_deploy():
+                result = _deployer.deploy_all(callback=_progress_cb)
+                # Priority: explicit env var → deployer-verified → pre-derived fallback
+                otlp_endpoint = OTLP_ENDPOINT or result.otlp_endpoint or _pre_derived_otlp
+                try:
+                    ctx = ScenarioContext.from_scenario(
+                        _scenario,
+                        otlp_endpoint=otlp_endpoint,
+                        otlp_api_key=api_key,
+                        elastic_url=elastic_url,
+                        elastic_api_key=api_key,
+                        kibana_url=kibana_url,
+                    )
+                    instance = ScenarioInstance(ctx, chaos_store=chaos_store)
+                    if otlp_endpoint:
+                        instance.otlp.reconfigure(otlp_endpoint, api_key)
+                    instance.start()
+                    registry.register(dep_id, instance)
+                    store.upsert(
+                        deployment_id=dep_id,
+                        scenario_id=s_id,
+                        otlp_endpoint=otlp_endpoint,
+                        otlp_api_key=api_key,
+                        elastic_url=elastic_url,
+                        elastic_api_key=api_key,
+                        kibana_url=kibana_url,
+                    )
+                    logger.info("Auto-deploy complete: %s (%s)", dep_id, s_id)
+                except Exception:
+                    logger.exception("Auto-deploy failed for %s", s_id)
 
-        def _auto_deploy():
-            result = deployer.deploy_all(callback=_progress_cb)
-            # Priority: explicit env var → deployer-verified → pre-derived fallback
-            otlp_endpoint = OTLP_ENDPOINT or result.otlp_endpoint or _pre_derived_otlp
-            try:
-                ctx = ScenarioContext.from_scenario(
-                    scenario,
-                    otlp_endpoint=otlp_endpoint,
-                    otlp_api_key=api_key,
-                    elastic_url=elastic_url,
-                    elastic_api_key=api_key,
-                    kibana_url=kibana_url,
-                )
-                instance = ScenarioInstance(ctx, chaos_store=chaos_store)
-                if otlp_endpoint:
-                    instance.otlp.reconfigure(otlp_endpoint, api_key)
-                instance.start()
-                registry.register(deployment_id, instance)
-                store.upsert(
-                    deployment_id=deployment_id,
-                    scenario_id=scenario_id,
-                    otlp_endpoint=otlp_endpoint,
-                    otlp_api_key=api_key,
-                    elastic_url=elastic_url,
-                    elastic_api_key=api_key,
-                    kibana_url=kibana_url,
-                )
-                logger.info("Auto-deploy complete: %s (%s)", deployment_id, scenario_id)
-            except Exception:
-                logger.exception("Auto-deploy failed for %s", scenario_id)
+            return _auto_deploy
 
-        _deploy_progress[deployment_id] = {"finished": False, "error": "", "steps": []}
-        threading.Thread(target=_auto_deploy, daemon=True).start()
+        for scenario_id in ACTIVE_SCENARIO_LIST:
+            if registry.get(scenario_id):
+                continue  # Already running (restored from SQLite)
+            scenario = get_scenario(scenario_id)
+            deployer = ScenarioDeployer(scenario, elastic_url, kibana_url, api_key, KIBANA_PROXY)
+            logger.info(
+                "Auto-deploy triggered from environment variables (scenario=%s)",
+                scenario_id,
+            )
+            _deploy_progress[scenario_id] = {
+                "finished": False, "error": "", "steps": [],
+                "scenario_name": scenario.scenario_name,
+            }
+            threading.Thread(
+                target=_make_auto_deploy(scenario_id, scenario_id, scenario, deployer),
+                daemon=True,
+            ).start()
 
     yield
 
@@ -921,8 +932,12 @@ async def launch_setup(body: dict):
     # Use scenario_id as deployment_id
     deployment_id = scenario_id
 
+    scenario_name = scenario.scenario_name
+
     def _progress_cb(progress):
-        _deploy_progress[deployment_id] = progress.to_dict()
+        d = progress.to_dict()
+        d["scenario_name"] = scenario_name
+        _deploy_progress[deployment_id] = d
 
     def _run():
         # Stop existing instance for this scenario if running
@@ -978,7 +993,9 @@ async def launch_setup(body: dict):
         except Exception as exc:
             logger.exception("Failed to start instance for %s: %s", scenario_id, exc)
 
-    _deploy_progress[deployment_id] = {"finished": False, "error": "", "steps": []}
+    _deploy_progress[deployment_id] = {
+        "finished": False, "error": "", "steps": [], "scenario_name": scenario_name,
+    }
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
 
@@ -1000,20 +1017,34 @@ async def setup_progress(deployment_id: Optional[str] = None):
     return {"finished": True, "error": "", "steps": []}
 
 
+@app.get("/api/setup/active-deploys")
+async def active_deploys():
+    """Return all deployments currently in progress (auto or manual).
+
+    The selector UI calls this on page load so it can resume progress panels
+    after a browser refresh without losing visibility into running deployments.
+    """
+    return {
+        "deployments": [
+            {"deployment_id": dep_id, "scenario_name": p.get("scenario_name", dep_id)}
+            for dep_id, p in _deploy_progress.items()
+            if not p.get("finished", True)
+        ]
+    }
+
+
 @app.get("/api/setup/auto-deploy")
 async def auto_deploy_status():
-    """Return whether an env-var-triggered auto-deploy is currently in progress.
+    """Return any env-var-triggered auto-deploys that are currently in progress.
 
-    The selector UI polls this on load so it can show the progress panel
-    without the user having to click Launch.
+    Kept for backward compatibility; the selector UI uses /api/setup/active-deploys.
     """
-    if ACTIVE_SCENARIO in _deploy_progress:
-        p = _deploy_progress[ACTIVE_SCENARIO]
-        return {
-            "in_progress": not p.get("finished", True),
-            "deployment_id": ACTIVE_SCENARIO,
-        }
-    return {"in_progress": False, "deployment_id": None}
+    deployments = [
+        {"deployment_id": s_id}
+        for s_id in ACTIVE_SCENARIO_LIST
+        if s_id in _deploy_progress and not _deploy_progress[s_id].get("finished", True)
+    ]
+    return {"deployments": deployments}
 
 
 @app.get("/api/setup/detect")
@@ -1079,45 +1110,47 @@ async def stop_and_teardown(body: dict = {}):
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="deployment_id is required")
 
-    # Stop specific deployment — remove from registry and stop generators synchronously
     inst = registry.remove(deployment_id)
+
+    if inst and inst.ctx.elastic_url and inst.ctx.elastic_api_key:
+        # Stop generators and run teardown together in a background thread so
+        # this endpoint returns immediately (inst.stop() can take several seconds).
+        deployer = ScenarioDeployer(
+            inst.ctx.scenario,
+            inst.ctx.elastic_url,
+            inst.ctx.kibana_url,
+            inst.ctx.elastic_api_key,
+        )
+
+        scenario_name = inst.ctx.scenario.scenario_name
+
+        def _progress_cb(progress):
+            d = progress.to_dict()
+            d["scenario_name"] = scenario_name
+            _teardown_progress[deployment_id] = d
+
+        def _run_teardown():
+            try:
+                inst.stop()
+                logger.info("Stopped deployment %s via stop-and-teardown", deployment_id)
+            except Exception as exc:
+                logger.warning("Error stopping deployment %s: %s", deployment_id, exc)
+            deployer.teardown_with_progress(callback=_progress_cb)
+            _purge_deployment_records(deployment_id)
+
+        _teardown_progress[deployment_id] = {
+            "finished": False, "error": "", "steps": [], "scenario_name": scenario_name,
+        }
+        threading.Thread(target=_run_teardown, daemon=True).start()
+        return {"status": "stopping", "deployment_id": deployment_id}
+
+    # No credentials (or no instance): stop synchronously (fast path) and mark done.
     if inst:
         try:
             inst.stop()
-            logger.info(
-                "Stopped deployment %s via stop-and-teardown", deployment_id
-            )
         except Exception as exc:
             logger.warning("Error stopping deployment %s: %s", deployment_id, exc)
-
-        # Run teardown in background thread with progress
-        if inst.ctx.elastic_url and inst.ctx.elastic_api_key:
-            deployer = ScenarioDeployer(
-                inst.ctx.scenario,
-                inst.ctx.elastic_url,
-                inst.ctx.kibana_url,
-                inst.ctx.elastic_api_key,
-            )
-
-            def _progress_cb(progress):
-                _teardown_progress[deployment_id] = progress.to_dict()
-
-            def _run_teardown():
-                deployer.teardown_with_progress(callback=_progress_cb)
-                _purge_deployment_records(deployment_id)
-
-            _teardown_progress[deployment_id] = {
-                "finished": False,
-                "error": "",
-                "steps": [],
-            }
-            thread = threading.Thread(target=_run_teardown, daemon=True)
-            thread.start()
-
-            return {"status": "stopping", "deployment_id": deployment_id}
-
     _purge_deployment_records(deployment_id)
-    # No credentials — mark as instantly done
     _teardown_progress[deployment_id] = {"finished": True, "error": "", "steps": []}
     return {"status": "stopping", "deployment_id": deployment_id}
 
@@ -1130,6 +1163,22 @@ async def teardown_progress(deployment_id: Optional[str] = None):
     if _teardown_progress:
         return list(_teardown_progress.values())[-1]
     return {"finished": True, "error": "", "steps": []}
+
+
+@app.get("/api/setup/active-teardowns")
+async def active_teardowns():
+    """Return all teardowns that are currently in progress.
+
+    The selector UI calls this on page load so it can resume progress panels
+    after a browser refresh without losing visibility into running teardowns.
+    """
+    return {
+        "teardowns": [
+            {"deployment_id": dep_id, "scenario_name": p.get("scenario_name", dep_id)}
+            for dep_id, p in _teardown_progress.items()
+            if not p.get("finished", True)
+        ]
+    }
 
 
 # ── Run ─────────────────────────────────────────────────────────────────────

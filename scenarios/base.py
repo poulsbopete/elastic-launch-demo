@@ -108,6 +108,11 @@ class BaseScenario(ABC):
         """ES/telemetry namespace prefix: 'nova7', 'fanatics', etc."""
         ...
 
+    @property
+    def sort_order(self) -> int:
+        """Display order on the scenario selector. Lower numbers appear first. Default 999."""
+        return 999
+
     # ── Services & Topology ──────────────────────────────────────────
 
     @property
@@ -334,7 +339,7 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        "FROM logs.otel,logs.otel.* "
+                        f"FROM logs.otel.{self.namespace},logs.otel.{self.namespace}.* "
                         "| WHERE @timestamp > NOW() - 15 MINUTES "
                         'AND body.text LIKE ?error_type AND severity_text == "ERROR" '
                         "| KEEP @timestamp, body.text, service.name, severity_text, event_name "
@@ -360,7 +365,7 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        "FROM logs.otel,logs.otel.* "
+                        f"FROM logs.otel.{self.namespace},logs.otel.{self.namespace}.* "
                         "| WHERE @timestamp > NOW() - 15 MINUTES "
                         '| STATS error_count = COUNT(*) WHERE severity_text == "ERROR", '
                         'warn_count = COUNT(*) WHERE severity_text == "WARN", '
@@ -380,7 +385,7 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        "FROM logs.otel,logs.otel.* "
+                        f"FROM logs.otel.{self.namespace},logs.otel.{self.namespace}.* "
                         "| WHERE @timestamp > NOW() - 15 MINUTES "
                         "AND service.name == ?service_name "
                         'AND severity_text IN ("ERROR", "WARN") '
@@ -419,7 +424,7 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        "FROM logs.otel,logs.otel.* "
+                        f"FROM logs.otel.{self.namespace},logs.otel.{self.namespace}.* "
                         "| WHERE @timestamp > NOW() - 15 MINUTES "
                         'AND severity_text IN ("ERROR", "WARN") '
                         '| STATS error_count = COUNT(*) WHERE severity_text == "ERROR", '
@@ -439,7 +444,7 @@ class BaseScenario(ABC):
                 ),
                 "configuration": {
                     "query": (
-                        "FROM logs.otel,logs.otel.* "
+                        f"FROM logs.otel.{self.namespace},logs.otel.{self.namespace}.* "
                         "| WHERE @timestamp > NOW() - 15 MINUTES "
                         'AND severity_text IN ("ERROR", "WARN") '
                         "| KEEP @timestamp, body.text, service.name, severity_text "
@@ -459,7 +464,7 @@ class BaseScenario(ABC):
                 "description": assessment["description"],
                 "configuration": {
                     "query": (
-                        "FROM logs.otel,logs.otel.* "
+                        f"FROM logs.otel.{self.namespace},logs.otel.{self.namespace}.* "
                         "| WHERE @timestamp > NOW() - 15 MINUTES "
                         'AND severity_text IN ("ERROR", "WARN") '
                         '| STATS error_count = COUNT(*) WHERE severity_text == "ERROR", '
@@ -472,3 +477,242 @@ class BaseScenario(ABC):
         )
 
         return tools
+
+    # ── Skill Definitions ────────────────────────────────────────────
+
+    @property
+    def builtin_skill_names(self) -> list[str]:
+        """Names/IDs of built-in Agent Builder skills to discover and attach."""
+        return [
+            "visualization-creation",
+            "observability.investigation",
+            "observability.rca",
+        ]
+
+    @property
+    def skill_definitions(self) -> list[dict[str, Any]]:
+        """Custom skill definitions deployed alongside agent tools."""
+        ns = self.namespace
+        agent_cfg = self.agent_config
+        assessment_tool = self.prefixed_tool_id(agent_cfg.get(
+            "assessment_tool_name",
+            self.assessment_tool_config.get("id", "operational_assessment"),
+        ))
+        p_search_error       = self.prefixed_tool_id("search_error_logs")
+        p_search_service     = self.prefixed_tool_id("search_service_logs")
+        p_browse_recent      = self.prefixed_tool_id("browse_recent_errors")
+        p_subsystem_health   = self.prefixed_tool_id("search_subsystem_health")
+        p_search_known       = self.prefixed_tool_id("search_known_anomalies")
+        p_trace_anomaly      = self.prefixed_tool_id("trace_anomaly_propagation")
+        p_remediation_action = self.prefixed_tool_id("remediation_action")
+        p_escalation_action  = self.prefixed_tool_id("escalation_action")
+
+        return [
+            self._investigation_playbook_skill(
+                ns, p_search_error, p_search_service, p_browse_recent,
+                p_subsystem_health, p_search_known, p_trace_anomaly, assessment_tool,
+            ),
+            self._channel_runbook_skill(ns, p_search_known),
+            self._remediation_guide_skill(ns, p_remediation_action, p_escalation_action),
+        ]
+
+    def _investigation_playbook_skill(
+        self,
+        ns: str,
+        p_search_error: str,
+        p_search_service: str,
+        p_browse_recent: str,
+        p_subsystem_health: str,
+        p_search_known: str,
+        p_trace_anomaly: str,
+        assessment_tool: str,
+    ) -> dict[str, Any]:
+        # Skill tool_ids capped at 5 per API limit; pick the 5 most-used investigation tools.
+        # p_subsystem_health and assessment_tool remain accessible via the agent's tool list.
+        tool_ids = [
+            p_search_error, p_search_service, p_browse_recent,
+            p_search_known, p_trace_anomaly,
+        ]
+        description = (
+            f"Investigate anomalies, errors, and faults in the {self.scenario_name} "
+            f"environment. Use this skill to look up error patterns, trace cascade failures "
+            f"across services, and perform structured root cause analysis using the correct "
+            f"ES|QL field names and parameterized investigation tools."
+        )
+        content = f"""## CRITICAL: Field Names
+
+- Log message field is `body.text` — NEVER use `body` alone (causes "Unknown column [body]")
+- NEVER use `message` — this field does not exist; the correct field is `body.text`
+- Service name field is `service.name`
+- Always query `FROM logs.otel.{ns},logs.otel.{ns}.*` (includes sub-streams)
+- Use `LIKE` or `KQL()` for text matching — NEVER use `MATCH()`
+
+## Tool Selection Guide
+
+1. **Known error type** → `{p_search_error}` — parameterized, returns matching ERROR logs
+2. **Specific service** → `{p_search_service}` — parameterized by service name
+3. **General awareness** → `{p_browse_recent}` or `{p_subsystem_health}`
+4. **Historical patterns** → `{p_search_known}` — knowledge base lookup
+5. **Cascade analysis** → `{p_trace_anomaly}` — cross-service propagation
+6. **Operational readiness** → `{assessment_tool}` — overall system health
+
+Do NOT write custom ES|QL queries. Use the parameterized tools.
+
+## Root Cause Analysis Methodology
+
+1. **Identify the Event**: Determine which channel(s) triggered and the error signature
+2. **Scope the Blast Radius**: Identify affected and cascade services
+3. **Temporal Correlation**: Find first occurrence, correlate with preceding events
+4. **Cross-Cloud Tracing**: Trace propagation across AWS, GCP, and Azure
+5. **Subsystem Impact**: Evaluate if fault is isolated or propagating
+6. **Known Pattern Matching**: Check knowledge base for similar anomalies
+7. **Severity Classification**: ADVISORY, CAUTION, WARNING, or CRITICAL
+
+## Response Format
+
+1. **Summary** — One-sentence description
+2. **Affected Systems** — Impacted services and subsystems
+3. **Root Cause** — Underlying cause determination
+4. **Evidence** — Specific log entries, timestamps, field values
+5. **Cascade Risk** — Propagation assessment
+6. **Recommendation** — Prioritized remediation steps
+7. **Confidence** — HIGH/MEDIUM/LOW with reasoning
+"""
+        return {
+            "id": f"{ns}-investigation-playbook",
+            "name": f"{self.scenario_name} Investigation Playbook",
+            "description": description,
+            "content": content,
+            "tool_ids": tool_ids,
+        }
+
+    def _channel_runbook_skill(self, ns: str, p_search_known: str) -> dict[str, Any]:
+        registry = self.channel_registry
+        description = (
+            f"Look up investigation procedures and remediation actions for "
+            f"{self.scenario_name} fault channels. Use when you need the documented "
+            f"procedure for a specific error type or to identify the correct "
+            f"remediation action_type for a channel."
+        )
+        # Build channel summary table
+        rows = []
+        for ch_num, ch in sorted(registry.items()):
+            rows.append(
+                f"| {ch_num} | {ch['name']} | `{ch['error_type']}` "
+                f"| {ch.get('remediation_action', 'N/A')} |"
+            )
+        table = "\n".join(rows)
+
+        # Build per-channel runbook sections inline (avoids referenced_content format issues)
+        channel_sections = []
+        for ch_num, ch in sorted(registry.items()):
+            ch_name = ch["name"]
+            error_type = ch["error_type"]
+            subsystem = ch.get("subsystem", "unknown")
+            affected = ", ".join(ch.get("affected_services", []))
+            cascade = ", ".join(ch.get("cascade_services", []))
+            description_text = ch.get("description", "")
+            remediation_action = ch.get("remediation_action", "remediate")
+            investigation_notes = ch.get("investigation_notes", "")
+            investigation_section = (
+                f"\n**Vendor Investigation:** {investigation_notes}\n"
+                if investigation_notes else ""
+            )
+            channel_sections.append(
+                f"### Channel {ch_num}: {ch_name}\n"
+                f"- **Error Type**: `{error_type}` — subsystem: {subsystem}\n"
+                f"- **Affected**: {affected} | **Cascade**: {cascade}\n"
+                f"- **Description**: {description_text}\n"
+                f"- **Remediation action_type**: `{remediation_action}` (channel: {ch_num})\n"
+                f"{investigation_section}"
+            )
+        channels_content = "\n".join(channel_sections)
+
+        content = f"""# {self.scenario_name} Fault Channel Reference
+
+Use `{p_search_known}` for dynamic keyword searches across the knowledge base.
+The error type appears in `body.text` log entries — search with `LIKE *ERROR_TYPE*`.
+The `remediation_action` value below is the `action_type` to pass to the remediation tool.
+
+## Channel Summary
+
+| # | Name | Error Type | Remediation |
+|---|------|-----------|-------------|
+{table}
+
+## Channel Runbooks
+
+{channels_content}
+"""
+        return {
+            "id": f"{ns}-channel-runbook",
+            "name": f"{self.scenario_name} Channel Runbook",
+            "description": description,
+            "content": content,
+            "tool_ids": [p_search_known],
+        }
+
+    def _remediation_guide_skill(
+        self,
+        ns: str,
+        p_remediation_action: str,
+        p_escalation_action: str,
+    ) -> dict[str, Any]:
+        description = (
+            f"Remediate confirmed anomalies, escalate critical incidents, or manage "
+            f"operational holds for {self.scenario_name}. Use after root cause analysis "
+            f"to execute remediation, request holds, or escalate. Includes correct "
+            f"parameters for remediation and escalation workflow tools."
+        )
+        content = f"""## Remediation Decision Framework
+
+### When to Remediate
+Execute remediation when:
+- Root cause is identified and confirmed
+- The `action_type` is known (from the channel runbook)
+- The user explicitly requests it
+
+### When to Escalate
+Use escalation when:
+- Severity is CRITICAL and multiple subsystems are affected
+- Automated remediation may trigger cascade effects
+- A hold decision is needed before proceeding
+
+## How to Remediate
+
+Use `{p_remediation_action}` with these parameters:
+- `action_type` — from the channel runbook (e.g. `recalibrate_engine`, `reset_fuel_system`)
+- `channel` — the fault channel number (1–20)
+- `error_type` — the error type identifier
+- `justification` — brief explanation
+- `dry_run` — `false` for actual remediation
+- `case_id` — **ALWAYS** pass this if you retrieved a case ID earlier in the conversation; never rely on tag-based search to find the case
+
+Once `{p_remediation_action}` returns successfully, report remediation as complete.
+Do NOT re-query logs to verify — the fix takes several minutes to propagate through the system.
+Do NOT execute remediation unless the user explicitly asks.
+
+## How to Escalate
+
+Use `{p_escalation_action}` with:
+- `action` — `"escalate"`, `"request_hold"`, `"resolve"`, or `"request_resume"`
+- `channel` — the fault channel number
+- `severity` — `"advisory"`, `"caution"`, `"warning"`, or `"critical"`
+- `justification` — investigation summary
+
+## HITL Channels (1–15)
+
+State your remediation recommendation and wait for explicit user approval before acting.
+Do NOT execute remediation based on the RCA alone.
+
+## Auto-Remediate Channels (16–20)
+
+These channels may be remediated without explicit user approval when the workflow requests it.
+"""
+        return {
+            "id": f"{ns}-remediation-guide",
+            "name": f"{self.scenario_name} Remediation Guide",
+            "description": description,
+            "content": content,
+            "tool_ids": [p_remediation_action, p_escalation_action, "platform.core.cases"],
+        }
