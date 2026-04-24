@@ -36,6 +36,14 @@ from elastic_config.deployer_alerting import AlertingMixin
 logger = logging.getLogger("deployer")
 
 
+def _dashboard_objects_to_delete(namespace: str) -> list[dict[str, str]]:
+    """Saved-object specs for dashboards created by the deployer for this namespace."""
+    objs: list[dict[str, str]] = [{"type": "dashboard", "id": f"{namespace}-exec-dashboard"}]
+    if namespace == "fanatics":
+        objs.append({"type": "dashboard", "id": f"{namespace}-business-exec-dashboard"})
+    return objs
+
+
 # ── Main deployer class ────────────────────────────────────────────────────
 
 class ScenarioDeployer(
@@ -92,7 +100,7 @@ class ScenarioDeployer(
             DeployStep("Create AI agent"),              # 9
             DeployStep("Create significant events", items_total=20),  # 10
             DeployStep("Create data views", items_total=5),  # 11
-            DeployStep("Import executive dashboard"),   # 12
+            DeployStep("Import Kibana dashboards"),   # 12
             DeployStep("Create alert rules", items_total=20),  # 13
             DeployStep("Enable APM anomaly detection"), # 14
             DeployStep("Create SLOs", items_total=3),  # 15
@@ -216,7 +224,7 @@ class ScenarioDeployer(
         resp = client.post(
             f"{self.kibana_url}/api/saved_objects/_bulk_delete",
             headers=_kibana_headers(self.api_key),
-            json=[{"type": "dashboard", "id": f"{self.ns}-exec-dashboard"}],
+            json=_dashboard_objects_to_delete(self.ns),
         )
         results["dashboard"] = resp.status_code < 300
 
@@ -362,10 +370,10 @@ class ScenarioDeployer(
                     resp = client.post(
                         f"{self.kibana_url}/api/saved_objects/_bulk_delete",
                         headers=_kibana_headers(self.api_key),
-                        json=[{"type": "dashboard", "id": f"{self.ns}-exec-dashboard"}],
+                        json=_dashboard_objects_to_delete(self.ns),
                     )
                     step.status = "ok"
-                    step.detail = "Dashboard deleted" if resp.status_code < 300 else "Dashboard not found"
+                    step.detail = "Dashboards deleted" if resp.status_code < 300 else "Dashboard delete incomplete"
                 except Exception as exc:
                     step.status = "failed"
                     step.detail = str(exc)

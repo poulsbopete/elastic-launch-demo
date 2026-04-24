@@ -33,6 +33,16 @@ class DigitalMarketplaceService(BaseService):
         self.emit_metric("marketplace.cart_conversion_pct", cart_conversion, "%")
         self.emit_metric("marketplace.avg_response_ms", avg_response_ms, "ms")
 
+        # Synthetic executive KPIs (programmatic ads + regulated wagering) for Kibana dashboards
+        ad_revenue = round(random.uniform(85_000.0, 520_000.0), 1)
+        fill_rate = round(random.uniform(82.0, 98.4), 2)
+        betting_handle = round(random.uniform(180_000.0, 2_200_000.0), 1)
+        hold_pct = round(random.uniform(6.5, 14.2), 2)
+        self.emit_metric("business.ad_revenue_usd_per_min", ad_revenue, "USD/min")
+        self.emit_metric("business.programmatic_fill_rate_pct", fill_rate, "%")
+        self.emit_metric("business.betting_handle_usd_per_min", betting_handle, "USD/min")
+        self.emit_metric("business.betting_hold_pct", hold_pct, "%")
+
         self.emit_log(
             "INFO",
             f"marketplace.health active_users={active_users} tps={transactions_per_sec} "

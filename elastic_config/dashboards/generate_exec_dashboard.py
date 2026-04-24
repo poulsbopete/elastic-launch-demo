@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-Generate an Executive Dashboard NDJSON file compatible with Kibana 9.4.
+Generate Kibana dashboard NDJSON (compatible with Kibana 9.4+).
 
 Can be used as:
   - Importable function: generate_dashboard_ndjson(scenario) -> str
   - Standalone script: python3 generate_exec_dashboard.py  (defaults to space scenario)
+
+Primary output: **Systems Operations Dashboard** (saved object id `{namespace}-exec-dashboard`)
+— telemetry, RED/USE, APM, and significant events.
+
+For the **fanatics** scenario, also emits a second saved object, **Executive Dashboard**
+(id `{namespace}-business-exec-dashboard`), with synthetic business KPIs (ad and wagering
+streams) emitted from `digital-marketplace`.
 
 Produces by-value Lens panels using the formBased datasource format that matches
 the built-in [OTel] dashboards shipped with Kibana 9.4, including all required
@@ -360,7 +367,12 @@ def generate_dashboard_ndjson(scenario) -> str:
         for ch in scenario.channel_registry.values()
     ]
 
-    return _build_dashboard_ndjson(scenario_name, namespace, cloud_groups, dashboard_id, error_types)
+    main = _build_dashboard_ndjson(
+        scenario_name, namespace, cloud_groups, dashboard_id, error_types
+    )
+    if namespace == "fanatics":
+        return main + _build_fanatics_business_dashboard_ndjson(scenario_name, namespace)
+    return main
 
 
 def _build_dashboard_ndjson(
@@ -1165,7 +1177,7 @@ def _build_dashboard_ndjson(
     dashboard = {
         "attributes": {
             "description": (
-                f"Executive overview of {scenario_name} telemetry \u2014 "
+                f"Systems operations view for {scenario_name} \u2014 "
                 f"service health, APM, NGINX, VPC flows, K8s cluster health "
                 f"across AWS/GCP/Azure"
             ),
@@ -1178,6 +1190,211 @@ def _build_dashboard_ndjson(
             "panelsJSON": json.dumps(panels),
             "refreshInterval": {"pause": False, "value": 10000},
             "timeFrom": "now-2m",
+            "timeRestore": True,
+            "timeTo": "now",
+            "title": f"{scenario_name} Systems Operations Dashboard",
+        },
+        "coreMigrationVersion": "8.8.0",
+        "id": dashboard_id,
+        "managed": False,
+        "references": all_refs,
+        "type": "dashboard",
+        "typeMigrationVersion": "10.3.0",
+    }
+
+    return json.dumps(dashboard, separators=(",", ":")) + "\n"
+
+
+def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str) -> str:
+    """Second dashboard: executive / revenue KPIs (Fanatics scenario only)."""
+    dashboard_id = f"{namespace}-business-exec-dashboard"
+    svc_kql = 'resource.attributes.service.name: "digital-marketplace"'
+
+    panels: list[dict] = []
+
+    panels.append(
+        {
+            "type": "DASHBOARD_MARKDOWN",
+            "embeddableConfig": {
+                "content": (
+                    "**Executive metrics** \u2014 blended media, marketplace, and regulated "
+                    "sports-wagering KPIs (synthetic demo streams on `digital-marketplace`). "
+                    "Roadmap: correlate Security Serverless findings (cases) with revenue-at-risk "
+                    "via agent-to-agent enrichment."
+                ),
+            },
+            "panelIndex": "eb_intro",
+            "gridData": {"h": 3, "i": "eb_intro", "w": 48, "x": 0, "y": 0},
+        }
+    )
+
+    kpi_specs = [
+        ("eb_kpi_ad", 0, "Ad revenue (USD / min)", "metrics.business.ad_revenue_usd_per_min"),
+        (
+            "eb_kpi_fill",
+            12,
+            "Programmatic fill rate (%)",
+            "metrics.business.programmatic_fill_rate_pct",
+        ),
+        (
+            "eb_kpi_handle",
+            24,
+            "Betting handle (USD / min)",
+            "metrics.business.betting_handle_usd_per_min",
+        ),
+        ("eb_kpi_hold", 36, "Sportsbook hold (%)", "metrics.business.betting_hold_pct"),
+    ]
+
+    for panel_index, x_off, panel_title, source_field in kpi_specs:
+        lid = uid()
+        cid = uid()
+        columns = {cid: col_last_value(source_field, label=panel_title)}
+        layer = make_layer(lid, [cid], columns, DATA_VIEW_ID_METRICS)
+        state = make_state(
+            layer,
+            {
+                "layerId": lid,
+                "layerType": "data",
+                "metricAccessor": cid,
+                "color": "#00BFB3",
+                "subtitle": "digital-marketplace",
+            },
+            query=svc_kql,
+        )
+        panels.append(
+            make_panel(
+                panel_index,
+                {"h": 6, "i": panel_index, "w": 12, "x": x_off, "y": 3},
+                panel_title,
+                "lnsMetric",
+                state,
+                [make_ref(DATA_VIEW_ID_METRICS, lid)],
+            )
+        )
+
+    # Revenue and handle over time (single-service split keeps Lens happy)
+    lid = uid()
+    cid_x = uid()
+    cid_y = uid()
+    cid_split = uid()
+    columns_rev = {
+        cid_x: col_date_histogram("30s"),
+        cid_y: col_average(
+            "metrics.business.ad_revenue_usd_per_min",
+            label="Ad revenue (USD/min)",
+        ),
+        cid_split: col_terms(
+            "resource.attributes.service.name",
+            "Service",
+            size=5,
+            order_col_id=cid_y,
+        ),
+    }
+    layer_rev = make_layer(lid, [cid_x, cid_split, cid_y], columns_rev, DATA_VIEW_ID_METRICS)
+    state_rev = make_state(
+        layer_rev,
+        {
+            "legend": {"isVisible": True, "position": "right"},
+            "valueLabels": "hide",
+            "fittingFunction": "None",
+            "preferredSeriesType": "line",
+            "layers": [
+                {
+                    "layerId": lid,
+                    "layerType": "data",
+                    "seriesType": "line",
+                    "accessors": [cid_y],
+                    "xAccessor": cid_x,
+                    "splitAccessor": cid_split,
+                }
+            ],
+        },
+        query=svc_kql,
+    )
+    panels.append(
+        make_panel(
+            "eb_ts_ad",
+            {"h": 12, "i": "eb_ts_ad", "w": 24, "x": 0, "y": 9},
+            "Ad revenue over time",
+            "lnsXY",
+            state_rev,
+            [make_ref(DATA_VIEW_ID_METRICS, lid)],
+        )
+    )
+
+    lid2 = uid()
+    cx = uid()
+    cy = uid()
+    cs = uid()
+    columns_bet = {
+        cx: col_date_histogram("30s"),
+        cy: col_average(
+            "metrics.business.betting_handle_usd_per_min",
+            label="Handle (USD/min)",
+        ),
+        cs: col_terms(
+            "resource.attributes.service.name",
+            "Service",
+            size=5,
+            order_col_id=cy,
+        ),
+    }
+    layer_bet = make_layer(lid2, [cx, cs, cy], columns_bet, DATA_VIEW_ID_METRICS)
+    state_bet = make_state(
+        layer_bet,
+        {
+            "legend": {"isVisible": True, "position": "right"},
+            "valueLabels": "hide",
+            "fittingFunction": "None",
+            "preferredSeriesType": "line",
+            "layers": [
+                {
+                    "layerId": lid2,
+                    "layerType": "data",
+                    "seriesType": "line",
+                    "accessors": [cy],
+                    "xAccessor": cx,
+                    "splitAccessor": cs,
+                }
+            ],
+        },
+        query=svc_kql,
+    )
+    panels.append(
+        make_panel(
+            "eb_ts_bet",
+            {"h": 12, "i": "eb_ts_bet", "w": 24, "x": 24, "y": 9},
+            "Betting handle over time",
+            "lnsXY",
+            state_bet,
+            [make_ref(DATA_VIEW_ID_METRICS, lid2)],
+        )
+    )
+
+    all_refs: list[dict] = []
+    seen_ref_names: set[str] = set()
+    for panel in panels:
+        attrs = panel.get("embeddableConfig", {}).get("attributes", {})
+        refs = attrs.get("references", [])
+        for ref in refs:
+            if ref["name"] not in seen_ref_names:
+                all_refs.append(ref)
+                seen_ref_names.add(ref["name"])
+
+    dashboard = {
+        "attributes": {
+            "description": (
+                f"Executive revenue and wagering KPIs for {scenario_name} "
+                f"(synthetic OTLP gauges from digital-marketplace)."
+            ),
+            "kibanaSavedObjectMeta": {
+                "searchSourceJSON": json.dumps(
+                    {"query": {"language": "kuery", "query": ""}, "filter": []}
+                ),
+            },
+            "panelsJSON": json.dumps(panels),
+            "refreshInterval": {"pause": False, "value": 10000},
+            "timeFrom": "now-15m",
             "timeRestore": True,
             "timeTo": "now",
             "title": f"{scenario_name} Executive Dashboard",
@@ -1217,4 +1434,6 @@ if __name__ == "__main__":
 
     print(f"Wrote {output_path}")
     print(f"  Scenario: {scenario.scenario_name}")
-    print(f"  Dashboard ID: {scenario.namespace}-exec-dashboard")
+    print(f"  Systems operations dashboard ID: {scenario.namespace}-exec-dashboard")
+    if scenario.namespace == "fanatics":
+        print(f"  Executive (revenue) dashboard ID: {scenario.namespace}-business-exec-dashboard")

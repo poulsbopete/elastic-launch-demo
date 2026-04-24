@@ -270,6 +270,27 @@ def _inject_theme(html: str, deployment_id: Optional[str] = None) -> str:
 }}
 body {{ font-family: {theme.font_family}; }}"""
 
+    if scenario.namespace == "fanatics":
+        revenue_dashboard_card = f"""
+            <a href="{kibana_display}/app/dashboards#/view/{scenario.namespace}-business-exec-dashboard"
+               class="nav-card" target="_blank" rel="noopener">
+                <div class="card-body">
+                    <div class="card-header">
+                        <span class="card-indicator"></span>
+                        <span class="card-title">Executive Dashboard (revenue)</span>
+                        <span class="external-icon">&#8599;</span>
+                    </div>
+                    <div class="card-desc">
+                        Business KPIs for the Fanatics demo: programmatic ad revenue, fill rate,
+                        sports-wagering handle, and hold % (synthetic OTLP streams from digital-marketplace).
+                    </div>
+                    <span class="card-tag kibana">Kibana</span>
+                    <span class="card-tag elastic">Metrics</span>
+                </div>
+            </a>"""
+    else:
+        revenue_dashboard_card = ""
+
     replacements = {
         "<!--THEME_CSS-->": f"<style>{css_override}</style>",
         "DEPLOYMENT_ID_PLACEHOLDER": deployment_id or "",
@@ -282,6 +303,7 @@ body {{ font-family: {theme.font_family}; }}"""
         "LANDING_TITLE_PLACEHOLDER": theme.landing_title,
         "KIBANA_URL_PLACEHOLDER": kibana_display,
         "CHANNEL_TIMEOUT_PLACEHOLDER": str(CHANNEL_TIMEOUT),
+        "REVENUE_DASHBOARD_CARD_PLACEHOLDER": revenue_dashboard_card,
     }
     for placeholder, value in replacements.items():
         html = html.replace(placeholder, value)
