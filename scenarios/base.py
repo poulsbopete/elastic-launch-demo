@@ -109,6 +109,11 @@ class BaseScenario(ABC):
         ...
 
     @property
+    def scenario_icon(self) -> str:
+        """Emoji icon displayed on the scenario selector card."""
+        return "🔧"
+
+    @property
     def sort_order(self) -> int:
         """Display order on the scenario selector. Lower numbers appear first. Default 999."""
         return 999

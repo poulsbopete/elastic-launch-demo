@@ -19,6 +19,10 @@ class SpaceScenario(BaseScenario):
         return "space"
 
     @property
+    def scenario_icon(self) -> str:
+        return "🚀"
+
+    @property
     def scenario_name(self) -> str:
         return "NOVA-7 Space Mission"
 

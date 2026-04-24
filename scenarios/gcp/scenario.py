@@ -19,6 +19,10 @@ class GCPScenario(BaseScenario):
         return "gcp"
 
     @property
+    def scenario_icon(self) -> str:
+        return "☁️"
+
+    @property
     def scenario_name(self) -> str:
         return "Google Cloud Network Operations"
 

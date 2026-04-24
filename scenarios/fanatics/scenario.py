@@ -20,6 +20,10 @@ class FanaticsScenario(BaseScenario):
         return "fanatics"
 
     @property
+    def scenario_icon(self) -> str:
+        return "🏈"
+
+    @property
     def scenario_name(self) -> str:
         return "Fanatics Collectibles"
 

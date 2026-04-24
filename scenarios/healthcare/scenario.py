@@ -20,6 +20,10 @@ class HealthcareScenario(BaseScenario):
         return "healthcare"
 
     @property
+    def scenario_icon(self) -> str:
+        return "🏥"
+
+    @property
     def scenario_name(self) -> str:
         return "Healthcare Systems"
 
