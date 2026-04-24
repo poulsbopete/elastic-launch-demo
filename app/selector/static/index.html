@@ -615,8 +615,6 @@
                     </div>
                 </div>
                 <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-<a href="${d.kibana_display_url}/app/dashboards#/view/${d.namespace}-exec-dashboard" target="_blank" rel="noopener" style="background: var(--teal); color: #000; border: 1px solid var(--teal); border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; text-decoration: none;">Systems Operations</a>
-                    ${d.namespace === 'fanatics' ? `<a href="${d.kibana_display_url}/app/dashboards#/view/${d.namespace}-business-exec-dashboard" target="_blank" rel="noopener" style="background: #238636; color: #fff; border: 1px solid #238636; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; text-decoration: none;">Executive (revenue)</a>` : ''}
                     <a href="/chaos?deployment_id=${d.deployment_id}" style="background: var(--amber); color: #000; border: 1px solid var(--amber); border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; text-decoration: none;">Chaos</a>
                     ${tearingDownIds.has(d.deployment_id)
                         ? `<button disabled style="background: rgba(248,81,73,0.25); color: rgba(255,255,255,0.4); border: none; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: not-allowed; font-family: inherit;">Removing…</button>`
