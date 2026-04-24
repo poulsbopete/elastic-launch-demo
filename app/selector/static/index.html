@@ -522,13 +522,6 @@
     </div>
 
 <script>
-    const SCENARIO_ICONS = {
-        space: '\uD83D\uDE80',
-        fanatics: '\uD83C\uDFC8',
-        financial: '\uD83D\uDCB9',
-        healthcare: '\uD83C\uDFE5',
-        gaming: '\uD83C\uDFAE',
-    };
 
     let scenarios = [];
     let selectedScenario = null;
@@ -610,7 +603,7 @@
                         border: 1px solid rgba(0,191,179,0.3); border-radius: 12px; padding: 16px 20px;
                         display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
                 <div style="display: flex; align-items: center; gap: 12px;">
-                    <span style="font-size: 20px;">${SCENARIO_ICONS[d.scenario_id] || '\uD83D\uDD27'}</span>
+                    <span style="font-size: 20px;">${d.icon || '\uD83D\uDD27'}</span>
                     <div>
                         <div style="font-weight: 600; color: #e6edf3; font-size: 14px;">
                             ${d.scenario_name}
@@ -642,7 +635,7 @@
             card.className = 'scenario-card';
             card.dataset.id = s.id;
             card.innerHTML = `
-                <div class="scenario-icon">${SCENARIO_ICONS[s.id] || '\uD83D\uDD27'}</div>
+                <div class="scenario-icon">${s.icon || '\uD83D\uDD27'}</div>
                 <h3>${s.name}</h3>
                 <p>${s.description.substring(0, 120)}${s.description.length > 120 ? '...' : ''}</p>
                 <span class="scenario-ns">${s.namespace}</span>

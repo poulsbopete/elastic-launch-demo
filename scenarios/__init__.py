@@ -57,6 +57,7 @@ def list_scenarios() -> list[dict[str, str]]:
             "name": s.scenario_name,
             "description": s.scenario_description,
             "namespace": s.namespace,
+            "icon": s.scenario_icon,
         }
         for s in sorted(_registry.values(), key=lambda s: s.sort_order)
     ]

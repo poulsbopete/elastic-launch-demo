@@ -20,6 +20,10 @@ class FinancialScenario(BaseScenario):
         return "financial"
 
     @property
+    def scenario_icon(self) -> str:
+        return "💹"
+
+    @property
     def scenario_name(self) -> str:
         return "Financial Trading Platform"
 
