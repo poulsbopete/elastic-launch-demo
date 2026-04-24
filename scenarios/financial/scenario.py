@@ -43,6 +43,10 @@ class FinancialScenario(BaseScenario):
     def sort_order(self) -> int:
         return 3
 
+    @property
+    def executive_kpi_emitter_service_name(self) -> str:
+        return "risk-calculator"
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

@@ -270,19 +270,19 @@ def _inject_theme(html: str, deployment_id: Optional[str] = None) -> str:
 }}
 body {{ font-family: {theme.font_family}; }}"""
 
-    if scenario.namespace == "fanatics":
+    if getattr(scenario, "executive_kpi_emitter_service_name", None):
         revenue_dashboard_card = f"""
             <a href="{kibana_display}/app/dashboards#/view/{scenario.namespace}-business-exec-dashboard"
                class="nav-card" target="_blank" rel="noopener">
                 <div class="card-body">
                     <div class="card-header">
                         <span class="card-indicator"></span>
-                        <span class="card-title">Executive Dashboard (revenue)</span>
+                        <span class="card-title">Executive Dashboard</span>
                         <span class="external-icon">&#8599;</span>
                     </div>
                     <div class="card-desc">
-                        Business KPIs for the Fanatics demo: programmatic ad revenue, fill rate,
-                        sports-wagering handle, and hold % (synthetic OTLP streams from digital-marketplace).
+                        Senior-leadership KPI deck (audience, monetization, partners, health proxies)
+                        \u2014 synthetic OTLP from <code>{scenario.executive_kpi_emitter_service_name}</code>.
                     </div>
                     <span class="card-tag kibana">Kibana</span>
                     <span class="card-tag elastic">Metrics</span>

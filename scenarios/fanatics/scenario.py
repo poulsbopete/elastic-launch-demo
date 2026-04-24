@@ -43,6 +43,10 @@ class FanaticsScenario(BaseScenario):
     def sort_order(self) -> int:
         return 2
 
+    @property
+    def executive_kpi_emitter_service_name(self) -> str:
+        return "digital-marketplace"
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

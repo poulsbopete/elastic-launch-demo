@@ -38,10 +38,10 @@ logger = logging.getLogger("deployer")
 
 def _dashboard_objects_to_delete(namespace: str) -> list[dict[str, str]]:
     """Saved-object specs for dashboards created by the deployer for this namespace."""
-    objs: list[dict[str, str]] = [{"type": "dashboard", "id": f"{namespace}-exec-dashboard"}]
-    if namespace == "fanatics":
-        objs.append({"type": "dashboard", "id": f"{namespace}-business-exec-dashboard"})
-    return objs
+    return [
+        {"type": "dashboard", "id": f"{namespace}-exec-dashboard"},
+        {"type": "dashboard", "id": f"{namespace}-business-exec-dashboard"},
+    ]
 
 
 # ── Main deployer class ────────────────────────────────────────────────────

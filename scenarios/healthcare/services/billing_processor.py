@@ -6,6 +6,7 @@ import random
 import time
 
 from app.services.base_service import BaseService
+from scenarios.executive_kpis import emit_executive_business_metrics_if_eligible
 
 
 class BillingProcessorService(BaseService):
@@ -56,6 +57,8 @@ class BillingProcessorService(BaseService):
         self.emit_metric(
             "billing.avg_reimbursement_days", float(random.randint(14, 45)), "days"
         )
+
+        emit_executive_business_metrics_if_eligible(self)
 
     def _emit_claim_submission(self) -> None:
         claim_id = f"CLM-{random.randint(100000, 999999)}"

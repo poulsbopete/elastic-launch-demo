@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 
 from app.services.base_service import BaseService
+from scenarios.executive_kpis import emit_executive_business_metrics_if_eligible
 
 
 class CloudCdnService(BaseService):
@@ -106,3 +107,5 @@ class CloudCdnService(BaseService):
                 "cdn.cache_fill_pct": cache_fill_pct,
             },
         )
+
+        emit_executive_business_metrics_if_eligible(self)

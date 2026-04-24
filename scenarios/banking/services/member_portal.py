@@ -6,6 +6,7 @@ import random
 import time
 
 from app.services.base_service import BaseService
+from scenarios.executive_kpis import emit_executive_business_metrics_if_eligible
 
 
 class MemberPortalService(BaseService):
@@ -40,6 +41,8 @@ class MemberPortalService(BaseService):
         self.emit_metric(
             "member_portal.session_duration_min", round(random.uniform(3, 25), 1), "min"
         )
+
+        emit_executive_business_metrics_if_eligible(self)
 
     def _emit_page_view(self) -> None:
         self._page_views += 1

@@ -42,6 +42,10 @@ class SpaceScenario(BaseScenario):
     def sort_order(self) -> int:
         return 1
 
+    @property
+    def executive_kpi_emitter_service_name(self) -> str:
+        return "mission-control"
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

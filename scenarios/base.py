@@ -118,6 +118,14 @@ class BaseScenario(ABC):
         """Display order on the scenario selector. Lower numbers appear first. Default 999."""
         return 999
 
+    @property
+    def executive_kpi_emitter_service_name(self) -> str | None:
+        """`SERVICE_NAME` of the one microservice that emits synthetic `business.*` executive KPI gauges.
+
+        Used by the Kibana Executive dashboard (Lens) and `scenarios.executive_kpis`. Override in each scenario.
+        """
+        return None
+
     # ── Services & Topology ──────────────────────────────────────────
 
     @property

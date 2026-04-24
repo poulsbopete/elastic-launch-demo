@@ -6,6 +6,7 @@ import random
 import time
 
 from app.services.base_service import BaseService
+from scenarios.executive_kpis import emit_executive_business_metrics_if_eligible
 
 
 class AnalyticsPipelineService(BaseService):
@@ -64,6 +65,8 @@ class AnalyticsPipelineService(BaseService):
             else round(random.uniform(85.0, 100.0), 1)
         )
         self.emit_metric("analytics.buffer_usage_pct", buffer_pct, "%")
+
+        emit_executive_business_metrics_if_eligible(self)
 
     def _emit_event_ingested(self) -> None:
         self._events_ingested += random.randint(50, 500)

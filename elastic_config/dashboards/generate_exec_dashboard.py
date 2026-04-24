@@ -9,9 +9,9 @@ Can be used as:
 Primary output: **Systems Operations Dashboard** (saved object id `{namespace}-exec-dashboard`)
 — telemetry, RED/USE, APM, and significant events.
 
-For the **fanatics** scenario, also emits a second saved object, **Executive Dashboard**
-(id `{namespace}-business-exec-dashboard`), with synthetic business KPIs (ad and wagering
-streams) emitted from `digital-marketplace`.
+Also emits a second saved object, **Executive Dashboard** (id `{namespace}-business-exec-dashboard`),
+when the scenario defines `executive_kpi_emitter_service_name`. Synthetic `business.*` OTLP gauges
+are emitted once per cycle from that service (`scenarios/executive_kpis.py`).
 
 Produces by-value Lens panels using the formBased datasource format that matches
 the built-in [OTel] dashboards shipped with Kibana 9.4, including all required
@@ -370,9 +370,8 @@ def generate_dashboard_ndjson(scenario) -> str:
     main = _build_dashboard_ndjson(
         scenario_name, namespace, cloud_groups, dashboard_id, error_types
     )
-    if namespace == "fanatics":
-        return main + _build_fanatics_business_dashboard_ndjson(scenario_name, namespace)
-    return main
+    biz = _build_business_executive_dashboard_ndjson(scenario)
+    return main + biz if biz else main
 
 
 def _build_dashboard_ndjson(
@@ -1205,10 +1204,62 @@ def _build_dashboard_ndjson(
     return json.dumps(dashboard, separators=(",", ":")) + "\n"
 
 
-def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str) -> str:
-    """Second dashboard: executive / revenue KPIs (Fanatics scenario only)."""
+# Intro markdown for the second (Executive) dashboard — one block per scenario_id.
+_EXEC_BUSINESS_DASHBOARD_INTROS: dict[str, str] = {
+    "space": (
+        "**Executive program view** \u2014 launch tempo, mission assurance, and "
+        "commercial-adjacent KPIs (synthetic `business.*` streams from Mission Control). "
+        "Same leadership layout as other scenarios for a consistent board deck."
+    ),
+    "fanatics": (
+        "**Executive leadership view** \u2014 sports media, streaming, fantasy, "
+        "commerce, sponsorship, and regulated wagering on one screen (synthetic OTLP "
+        "streams from `digital-marketplace`)."
+    ),
+    "financial": (
+        "**Executive trading view** \u2014 flow, risk, and franchise KPIs synthesized "
+        "for the trading platform (synthetic `business.*` from `risk-calculator`)."
+    ),
+    "healthcare": (
+        "**Executive clinical operations** \u2014 access, throughput, and revenue-cycle "
+        "proxies for hospital leadership (synthetic `business.*` from `billing-processor`)."
+    ),
+    "gaming": (
+        "**Executive live-ops view** \u2014 engagement, monetization, and community health "
+        "KPIs for the gaming surface (synthetic `business.*` from `analytics-pipeline`)."
+    ),
+    "banking": (
+        "**Executive retail banking** \u2014 digital adoption, deposits, and franchise health "
+        "proxies (synthetic `business.*` from `member-portal`)."
+    ),
+    "ecommerce": (
+        "**Executive commerce & ads** \u2014 traffic, GMV, and monetization stack KPIs "
+        "(synthetic `business.*` from `ad-platform`)."
+    ),
+    "gcp": (
+        "**Executive network & edge** \u2014 delivery scale, partner, and commercial KPIs "
+        "for GCP networking (synthetic `business.*` from `cloud-cdn-service`)."
+    ),
+}
+
+
+def _build_business_executive_dashboard_ndjson(scenario) -> str:
+    """Second saved object: `{namespace}-business-exec-dashboard` for senior-leadership KPIs."""
+    svc = getattr(scenario, "executive_kpi_emitter_service_name", None)
+    if not svc:
+        return ""
+
+    scenario_name = scenario.scenario_name
+    namespace = scenario.namespace
     dashboard_id = f"{namespace}-business-exec-dashboard"
-    svc_kql = 'resource.attributes.service.name: "digital-marketplace"'
+    svc_kql = f'resource.attributes.service.name: "{svc}"'
+    intro = _EXEC_BUSINESS_DASHBOARD_INTROS.get(
+        scenario.scenario_id,
+        (
+            f"**Executive view** \u2014 cross-functional KPIs for {scenario_name} "
+            f"(synthetic `business.*` from `{svc}`)."
+        ),
+    )
 
     panels: list[dict] = []
 
@@ -1224,7 +1275,7 @@ def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str
                 "layerType": "data",
                 "metricAccessor": cid,
                 "color": "#00BFB3",
-                "subtitle": "digital-marketplace",
+                "subtitle": svc,
             },
             query=svc_kql,
         )
@@ -1289,14 +1340,7 @@ def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str
     panels.append(
         {
             "type": "DASHBOARD_MARKDOWN",
-            "embeddableConfig": {
-                "content": (
-                    "**Executive leadership view** \u2014 sports media, streaming, fantasy, "
-                    "commerce, sponsorship, and regulated wagering on one screen (synthetic OTLP "
-                    "streams from `digital-marketplace`). Modeled after how a modern sports brand "
-                    "balances audience scale, monetization, and partner revenue."
-                ),
-            },
+            "embeddableConfig": {"content": intro},
             "panelIndex": "eb_intro",
             "gridData": {"h": 3, "i": "eb_intro", "w": 48, "x": 0, "y": 0},
         }
@@ -1477,7 +1521,7 @@ def _build_fanatics_business_dashboard_ndjson(scenario_name: str, namespace: str
             "description": (
                 f"Executive leadership KPIs for {scenario_name} \u2014 audience, video, "
                 f"subscriptions, commerce, sponsorship, fantasy, wagering, and health proxies "
-                f"(synthetic OTLP gauges from digital-marketplace)."
+                f"(synthetic OTLP gauges from `{svc}`)."
             ),
             "kibanaSavedObjectMeta": {
                 "searchSourceJSON": json.dumps(
@@ -1527,5 +1571,5 @@ if __name__ == "__main__":
     print(f"Wrote {output_path}")
     print(f"  Scenario: {scenario.scenario_name}")
     print(f"  Systems operations dashboard ID: {scenario.namespace}-exec-dashboard")
-    if scenario.namespace == "fanatics":
-        print(f"  Executive (revenue) dashboard ID: {scenario.namespace}-business-exec-dashboard")
+    if getattr(scenario, "executive_kpi_emitter_service_name", None):
+        print(f"  Executive dashboard ID: {scenario.namespace}-business-exec-dashboard")

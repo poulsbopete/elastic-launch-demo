@@ -42,6 +42,10 @@ class GamingScenario(BaseScenario):
     def sort_order(self) -> int:
         return 5
 
+    @property
+    def executive_kpi_emitter_service_name(self) -> str:
+        return "analytics-pipeline"
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property

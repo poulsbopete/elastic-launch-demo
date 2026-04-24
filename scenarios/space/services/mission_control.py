@@ -6,6 +6,7 @@ import random
 import time
 
 from app.services.base_service import BaseService
+from scenarios.executive_kpis import emit_executive_business_metrics_if_eligible
 
 
 class MissionControlService(BaseService):
@@ -51,6 +52,8 @@ class MissionControlService(BaseService):
             float(len(cascade_channels)),
             "alerts",
         )
+
+        emit_executive_business_metrics_if_eligible(self)
 
     def _emit_subsystem_poll(self) -> None:
         subsystem = self._subsystems[self._subsystem_poll_idx % len(self._subsystems)]

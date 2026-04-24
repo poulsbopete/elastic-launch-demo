@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 
 from app.services.base_service import BaseService
+from scenarios.executive_kpis import emit_executive_business_metrics_if_eligible
 
 
 class AdPlatformService(BaseService):
@@ -58,3 +59,5 @@ class AdPlatformService(BaseService):
                 "ads.budget_utilization_pct": budget_utilization_pct,
             },
         )
+
+        emit_executive_business_metrics_if_eligible(self)

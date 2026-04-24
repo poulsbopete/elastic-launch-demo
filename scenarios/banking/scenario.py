@@ -43,6 +43,10 @@ class BankingScenario(BaseScenario):
     def sort_order(self) -> int:
         return 6
 
+    @property
+    def executive_kpi_emitter_service_name(self) -> str:
+        return "member-portal"
+
     # ── Services ──────────────────────────────────────────────────────
 
     @property
