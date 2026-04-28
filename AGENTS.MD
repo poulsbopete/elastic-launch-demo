@@ -988,12 +988,13 @@ When falling back to `_wf_search`, distinguish by presence/absence of "Auto-Reme
 **Steps shared by both workflows** (after `create_case`):
 
 1. `attach_alert_to_case` — MUST be immediately after `create_case` (HTTP 400 if case is already closed when this runs)
+2. `simulated_security_a2a` — `POST /api/cases/{id}/comments` with `type: user`; adds a **synthetic** Security→Observability A2A enrichment block (correlation id, TI/entity posture placeholders, join keys). Tagged `a2a-security-sim` on the case. Not a live Security query — demo narrative only.
 
-**HITL steps** (after `attach_alert_to_case`):
+**HITL steps** (after `attach_alert_to_case` + `simulated_security_a2a`):
 
 1. `inject_case_context` — `kibana.request` to `/api/agent_builder/converse` with `conversation_id`; message MUST include explicit "Do NOT execute any remediation actions" — providing a case ID alone is enough for the agent to self-remediate
 
-**Auto-remediate steps** (after `attach_alert_to_case`):
+**Auto-remediate steps** (after `attach_alert_to_case` + `simulated_security_a2a`):
 
 1. `request_remediation` — `kibana.request` to `/api/agent_builder/converse` with `conversation_id`; asks the agent to call the `nova7_remediation_action` workflow tool passing `action_type`, `channel`, `error_type`, `case_id`, `dry_run: false`. The `remediation_action` workflow tool handles the queue write (for `RemediationPoller`), case comment, and case close.
 

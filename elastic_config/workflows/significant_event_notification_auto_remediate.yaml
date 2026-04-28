@@ -92,6 +92,7 @@ steps:
       tags:
         - "__NS__"
         - "{{ event.rule.tags[1] }}"
+        - "a2a-security-sim"
       severity: "high"
       owner: "observability"
       settings:
@@ -116,6 +117,32 @@ steps:
         rule:
           id: "{{ event.rule.id }}"
           name: "{{ event.rule.name }}"
+        owner: "observability"
+
+  - name: simulated_security_a2a
+    type: kibana.request
+    with:
+      method: POST
+      path: "/api/cases/{{ steps.create_case.output.id }}/comments"
+      headers:
+        kbn-xsrf: "true"
+      body:
+        type: "user"
+        comment: |
+          ## Simulated Security enrichment (A2A handoff)
+
+          *Synthetic demo data only — models an **Elastic Security → Observability** agent handoff for the same incident window.*
+
+          | Field | Value |
+          | --- | --- |
+          | **A2A correlation** | `SEC-A2A-{{ steps.create_case.output.id }}` |
+          | **Related rule (sim.)** | Degraded service correlated with `{{ event.rule.tags[1] }}` error family |
+          | **Security severity** | medium (noise-adjusted) |
+          | **TI / reputation (sim.)** | No high-confidence malicious IOC; no known C2 match for affected `service.name` in last 24h |
+          | **Entity posture (sim.)** | Affected entities: **low–medium** risk; no privileged-escalation or lateral-movement *indicators* in the same trace window |
+          | **Suggested join keys** | `trace.id`, `service.name`, `host.name` / `cloud.instance.id` (if present in Security indices) |
+
+          **Analyst note:** Use this to *disambiguate* operational fault vs. concurrent security activity. Primary RCA remains the Observability signal; treat this as **enrichment**, not a replacement root cause.
         owner: "observability"
 
   - name: request_remediation
@@ -148,5 +175,6 @@ steps:
         total_errors: "{{ steps.count_errors.output.values[0][0] }}"
         rca_case_created: true
         auto_remediated: true
+        security_a2a_enriched: true
         mission_id: "__SCENARIO_NAME__"
       refresh: wait_for
