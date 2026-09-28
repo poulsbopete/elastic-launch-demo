@@ -22,6 +22,7 @@ import time
 
 from app.telemetry import OTLPClient, _format_attributes, SCHEMA_URL, _now_ns
 from app.config import ACTIVE_SCENARIO
+from app.chaos.channels import FAULT_KIND_TABLE_FULL_VS_DISK, services_for_fault_kind
 
 logger = logging.getLogger("host-metrics-generator")
 
@@ -391,11 +392,12 @@ def _generate_host_metrics(
     rng: random.Random,
     cpu_spike_pct: float = 0,
     memory_spike_pct: float = 0,
+    disk_spike_pct: float = 0,
 ) -> dict[str, list]:
     """Generate all host metrics grouped by scraper scope name.
 
     Returns dict mapping scope_name -> list of metric dicts.
-    cpu_spike_pct/memory_spike_pct: 0-100 target utilization when spiked.
+    cpu_spike_pct/memory_spike_pct/disk_spike_pct: 0-100 target utilization when spiked.
     """
     state.tick()
     metrics_by_scope: dict[str, list] = {}
@@ -566,7 +568,10 @@ def _generate_host_metrics(
     # ── Filesystem metrics ──
     fs_metrics = []
     disk_total = state.disk_total
-    disk_used_pct = rng.uniform(0.20, 0.75)
+    if disk_spike_pct > 0:
+        disk_used_pct = rng.uniform(max(0.90, disk_spike_pct / 100.0), 0.995)
+    else:
+        disk_used_pct = rng.uniform(0.20, 0.75)
     for device, mountpoint, fs_type in [
         ("/dev/sda1", "/", "ext4"),
         ("/dev/sdb1", "/data", "xfs"),
@@ -1019,8 +1024,9 @@ def run(
 
         # Build set of cloud providers with active faults (for targeting)
         spiked_clouds: set[str] = set()
+        disk_spiked_clouds: set[str] = set()
         has_active_faults = False
-        if chaos_controller and (cpu_pct > 0 or mem_pct > 0):
+        if chaos_controller:
             active_channels = chaos_controller.get_active_channels()
             if active_channels:
                 has_active_faults = True
@@ -1030,6 +1036,12 @@ def run(
                         cloud = _service_cloud.get(svc)
                         if cloud:
                             spiked_clouds.add(cloud)
+                for svc in services_for_fault_kind(
+                    _channel_registry, active_channels, FAULT_KIND_TABLE_FULL_VS_DISK
+                ):
+                    cloud = _service_cloud.get(svc)
+                    if cloud:
+                        disk_spiked_clouds.add(cloud)
 
         batch_metrics = 0
         for host_cfg, resource, state, proc_states in zip(
@@ -1049,9 +1061,11 @@ def run(
             else:
                 host_cpu = 0
                 host_mem = 0
+            host_disk = 98 if host_cloud in disk_spiked_clouds else 0
 
             metrics_by_scope = _generate_host_metrics(
-                state, rng, cpu_spike_pct=host_cpu, memory_spike_pct=host_mem
+                state, rng, cpu_spike_pct=host_cpu, memory_spike_pct=host_mem,
+                disk_spike_pct=host_disk,
             )
             sent = _send_metrics_with_scopes(client, resource, metrics_by_scope)
             batch_metrics += sent

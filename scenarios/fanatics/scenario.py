@@ -884,6 +884,53 @@ class FanaticsScenario(BaseScenario):
                     "Action:         Check IPSec SA, verify gateway reachability"
                 ),
             },
+            21: {
+                "name": "Slow Marketplace — Table Full vs Container Disk",
+                "subsystem": "commerce",
+                "vehicle_section": "listing_store",
+                "error_type": "TABLE_IS_FULL",
+                "sensor_type": "mysql_tablespace",
+                "fault_kind": "table_full_vs_disk",
+                "affected_services": ["digital-marketplace", "auction-engine"],
+                "cascade_services": ["packaging-fulfillment"],
+                "description": (
+                    "Checkout and listing APIs are slow. APM traces drill into a MySQL INSERT "
+                    "that looks like the listings table is full. The real cause is marketplace "
+                    "pod ephemeral storage exhaustion — InnoDB cannot extend the tablespace, "
+                    "and the Bedrock recommendation cache cannot write either."
+                ),
+                "investigation_notes": (
+                    "1. Open the slow checkout/recommend trace. The waterfall will show INSERT INTO listings "
+                    "dominating duration with MySQL error 1114 TABLE_IS_FULL — that is the *symptom*, not the cause.\n"
+                    "2. Do not stop at the database. Correlate the same time window with "
+                    "`k8s.pod.filesystem.utilization` on digital-marketplace and "
+                    "`system.filesystem.utilization` on fanatics-aws-host-01.\n"
+                    "3. Container ephemeral storage is ~99% full (app logs, Bedrock response cache under /tmp/bedrock-cache, "
+                    "and InnoDB ibtmp). MySQL reports 'table is full' because the container disk cannot grow the tablespace.\n"
+                    "4. Confirm Bedrock LLM spans (`gen_ai.provider.name = aws.bedrock`) are also slow — "
+                    "InvokeModel succeeds, then the local cache write blocks on ENOSPC.\n"
+                    "5. Immediate remediation: recycle the digital-marketplace pod to free ephemeral storage "
+                    "(`free_ephemeral_storage`). Then enable log rotation and raise the pod ephemeral-storage limit.\n"
+                    "6. Do not ALTER TABLE, drop rows, or scale MySQL — the listings table is not actually at max rows."
+                ),
+                "remediation_action": "free_ephemeral_storage",
+                "error_message": (
+                    "pymysql.err.OperationalError: (1114, \"TABLE_IS_FULL: The table 'listings' is full\") "
+                    "sku={listing_sku} order={order_id} latency_ms={app_latency_ms} "
+                    "pod_fs_util_pct={pod_fs_util_pct} mysql_errno=1114 "
+                    "cache_path=/tmp/bedrock-cache write=ENOSPC"
+                ),
+                "stack_trace": (
+                    "Traceback (most recent call last):\n"
+                    '  File "/app/marketplace/handlers/checkout.py", line 214, in create_listing\n'
+                    "    cursor.execute(INSERT_LISTING, (sku, seller_id, price))\n"
+                    '  File "/app/marketplace/db/pool.py", line 88, in execute\n'
+                    "    return self._conn.cursor().execute(sql, params)\n"
+                    "pymysql.err.OperationalError: (1114, \"TABLE_IS_FULL: The table 'listings' is full\")\n"
+                    "OSError: [Errno 28] No space left on device: '/tmp/bedrock-cache/{listing_sku}.json'\n"
+                    "Hint: check pod ephemeral storage before resizing MySQL"
+                ),
+            },
         }
 
     # ── Topology ──────────────────────────────────────────────────────
@@ -955,6 +1002,7 @@ class FanaticsScenario(BaseScenario):
                 ("/api/v1/marketplace/browse", "GET"),
                 ("/api/v1/marketplace/checkout", "POST"),
                 ("/api/v1/marketplace/search", "GET"),
+                ("/api/v1/marketplace/recommend", "POST"),
             ],
             "auction-engine": [
                 ("/api/v1/auction/live", "GET"),
@@ -983,6 +1031,7 @@ class FanaticsScenario(BaseScenario):
             "digital-marketplace": [
                 ("SELECT", "products", "SELECT id, name, price, stock FROM products WHERE category = ? AND status = 'active' ORDER BY listed_at DESC LIMIT 50"),
                 ("INSERT", "orders", "INSERT INTO orders (user_id, product_id, quantity, total, status, created_at) VALUES (?, ?, ?, ?, 'pending', NOW())"),
+                ("INSERT", "listings", "INSERT INTO listings (sku, seller_id, title, price, status, created_at) VALUES (?, ?, ?, ?, 'active', NOW())"),
                 ("UPDATE", "inventory", "UPDATE inventory SET quantity = quantity - ? WHERE sku = ? AND quantity >= ?"),
             ],
             "auction-engine": [
@@ -1005,6 +1054,17 @@ class FanaticsScenario(BaseScenario):
             "cloud-inventory-scanner": [
                 ("SELECT", "cloud_resources", "SELECT resource_id, resource_type, provider, region, owner_tag, created_at FROM cloud_resources WHERE owner_tag IS NULL AND created_at < NOW() - INTERVAL 7 DAY"),
             ],
+        }
+
+    @property
+    def llm_operations(self) -> dict[str, dict[str, Any]]:
+        return {
+            "digital-marketplace": {
+                "provider": "aws.bedrock",
+                "system": "aws.bedrock",
+                "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "operation": "chat",
+            },
         }
 
     # ── Infrastructure ────────────────────────────────────────────────
@@ -1408,6 +1468,26 @@ class FanaticsScenario(BaseScenario):
                 "dns-dhcp-service": {"dns.cross_cloud_resolution_broken": True, "dns.conditional_forwarder_down": rng.choice(["aws-to-azure", "gcp-to-azure"])},
                 "firewall-gateway": {"firewall.ipsec_esp_drops": rng.randint(100, 5000), "firewall.dpd_timeout_count": rng.randint(5, 50)},
             },
+            21: {  # Slow Marketplace — Table Full vs Container Disk
+                "digital-marketplace": {
+                    "db.error_code": 1114,
+                    "db.table_full": True,
+                    "db.table": "listings",
+                    "k8s.pod.ephemeral_storage_util_pct": round(rng.uniform(96.5, 99.8), 1),
+                    "k8s.pod.disk_pressure": True,
+                    "gen_ai.cache_write_enospc": True,
+                    "gen_ai.provider": "aws.bedrock",
+                },
+                "auction-engine": {
+                    "auction.listing_insert_timeout": True,
+                    "auction.stale_catalog_count": rng.randint(20, 200),
+                    "db.error_code": 1114,
+                },
+                "packaging-fulfillment": {
+                    "warehouse.order_create_backlog": rng.randint(40, 400),
+                    "warehouse.downstream_db_timeout": True,
+                },
+            },
         }
         channel_clues = clues.get(channel, {})
         return channel_clues.get(service_name, {})
@@ -1434,6 +1514,7 @@ class FanaticsScenario(BaseScenario):
             18: ("deployment.scanner_firmware", "mc9300-fw-3.0.5-known-bug"),
             19: ("infra.cloud_policy_ver", "org-policy-v2.4.0-unenforced"),
             20: ("network.vpn_gw_firmware", "vgw-strongswan-5.9.14-rc2"),
+            21: ("k8s.pod.ephemeral_storage_class", "gp3-unbounded-emptyDir"),
         }
         attr_key, attr_val = correlation_attrs.get(channel, ("deployment.release_train", "unknown"))
         # 90% on errors, 5% on healthy
@@ -1612,6 +1693,11 @@ class FanaticsScenario(BaseScenario):
             "vpn_ike_phase": random.choice(["1", "2"]),
             "vpn_ike_status": random.choice(["FAILED", "TIMEOUT", "SA_EXPIRED"]),
             "vpn_last_dpd_sec": random.randint(30, 300),
+
+            # ── LLM obs / misleading RCA (channel 21) ──
+            "listing_sku": f"SKU-{random.randint(100000, 999999)}",
+            "app_latency_ms": random.randint(2500, 12000),
+            "pod_fs_util_pct": round(random.uniform(96.5, 99.9), 1),
         }
 
 

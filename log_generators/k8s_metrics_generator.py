@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from app.telemetry import OTLPClient, _format_attributes, SCHEMA_URL, _now_ns
 from app.config import ACTIVE_SCENARIO, NAMESPACE
+from app.chaos.channels import FAULT_KIND_TABLE_FULL_VS_DISK, services_for_fault_kind
 
 logger = logging.getLogger("k8s-metrics-generator")
 
@@ -227,6 +228,9 @@ def _generate_pod_metrics(svc: str, state: K8sState, rng: random.Random) -> list
 
     # Pod Filesystem
     metrics.append(_gauge("k8s.pod.filesystem.usage", "By", rng.randint(100_000_000, 500_000_000), is_int=True))
+    fs_capacity = 10_000_000_000
+    metrics.append(_gauge("k8s.pod.filesystem.capacity", "By", fs_capacity, is_int=True))
+    metrics.append(_gauge("k8s.pod.filesystem.utilization", "1", rng.uniform(0.12, 0.48)))
 
     # Container metrics
     container_attrs = {"container.name": f"{svc}-container"}
@@ -589,14 +593,18 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
 
         # Build set of spiked services (affected by active faults)
         spiked_services: set[str] = set()
+        disk_spiked_services: set[str] = set()
         has_active_faults = False
-        if chaos_controller and oom_intensity > 0:
+        if chaos_controller:
             active_channels = chaos_controller.get_active_channels()
             if active_channels:
                 has_active_faults = True
                 for ch_id in active_channels:
                     ch = _channel_registry.get(ch_id, {})
                     spiked_services.update(ch.get("affected_services", []))
+                disk_spiked_services = services_for_fault_kind(
+                    _channel_registry, active_channels, FAULT_KIND_TABLE_FULL_VS_DISK
+                )
 
         for cluster, pod_data in cluster_data:
             svcs = cluster["services"]
@@ -622,6 +630,18 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
                                 state.restarts[svc] += 1
                                 m["sum"]["dataPoints"][0]["asInt"] = str(state.restarts[svc])
 
+                if svc in disk_spiked_services:
+                    fs_util = rng.uniform(0.965, 0.995)
+                    fs_capacity = 10_000_000_000
+                    fs_used = int(fs_capacity * fs_util)
+                    for m in metrics:
+                        if m["name"] == "k8s.pod.filesystem.utilization":
+                            m["gauge"]["dataPoints"][0]["asDouble"] = fs_util
+                        elif m["name"] == "k8s.pod.filesystem.usage":
+                            m["gauge"]["dataPoints"][0]["asInt"] = str(fs_used)
+                        elif m["name"] == "k8s.pod.filesystem.capacity":
+                            m["gauge"]["dataPoints"][0]["asInt"] = str(fs_capacity)
+
                 resource_metrics.append({
                     "resource": pod_res,
                     "scopeMetrics": [{"scope": {"name": KUBELET_SCOPE, "version": SCOPE_VERSION}, "metrics": metrics}],
@@ -633,6 +653,7 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
 
             # Determine if any node in this cluster has spiked services
             cluster_has_spike = oom_intensity > 0 and (not has_active_faults or any(s in spiked_services for s in svcs))
+            cluster_has_disk = any(s in disk_spiked_services for s in svcs)
 
             # Node-level metrics (one resource per node, k8sclusterreceiver scope)
             for node_name in pod_data["node_names"]:
@@ -644,6 +665,13 @@ def run(client: OTLPClient, stop_event: threading.Event, scenario_data: dict | N
                     for m in metrics:
                         if m["name"] == "k8s.node.condition_memory_pressure":
                             m["gauge"]["dataPoints"][0]["asInt"] = str(1)
+
+                if cluster_has_disk:
+                    for m in metrics:
+                        if m["name"] == "k8s.node.condition_disk_pressure":
+                            m["gauge"]["dataPoints"][0]["asInt"] = str(1)
+                        elif m["name"] == "k8s.node.filesystem.utilization":
+                            m["gauge"]["dataPoints"][0]["asDouble"] = rng.uniform(0.94, 0.99)
 
                 resource_metrics.append({
                     "resource": node_res,
